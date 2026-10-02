@@ -1,0 +1,6 @@
+{
+  "label": "SYNTHETIC DEMONSTRATION DATA — NOT REAL PATIENT DATA",
+  "language": "hi",
+  "patient": {"name": "Sunita Devi", "age": 28, "gender": "female"},
+  "transcript": "Doctor: Kya taklif hai aapko? Patient: Mujhe do din se bukhar aur sar dard hai, aur gale mein kharash bhi hai. Doctor: Thik hai, yeh gale ka infection lag raha hai. Paracetamol 500 mg din mein do baar, teen din tak lijiye. Aur Amoxicillin 500 mg din mein teen baar, paanch din tak. Garam paani se gargle kariye."
+}

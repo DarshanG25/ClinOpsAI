@@ -1,0 +1,6 @@
+{
+  "label": "SYNTHETIC DEMONSTRATION DATA — NOT REAL PATIENT DATA",
+  "language": "en",
+  "patient": {"name": "Aisha Shaikh", "age": 22, "gender": "female"},
+  "transcript": "Doctor: Batao kya problem hai? Patient: Mujhe do din se loose motion ho raha hai aur thoda vomiting bhi hua ek baar. Doctor: Dehydration se bachne ke liye ORS lijiye, ek sachet subah shaam do baar, teen din tak. Aur Metronidazole 400 mg teen baar roz, paanch din. Bahar ka khana avoid kijiye."
+}

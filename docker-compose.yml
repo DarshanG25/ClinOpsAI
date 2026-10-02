@@ -1,0 +1,42 @@
+version: '3.9'
+
+# ClinOps-AI local dev stack. SQLite is used by default (see backend .env.example),
+# so no separate database service is required.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: clinops-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:////app/clinops_ai.db
+      - ASR_MODE=auto
+      - WHISPER_MODEL=small
+      - DEVICE=auto
+      - DIARIZATION_ENABLED=true
+      - DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
+      - HF_TOKEN=${HF_TOKEN:-}
+      - DATA_DIR=/app/data
+    volumes:
+      - backend_uploads:/app/uploads
+      - backend_outputs:/app/outputs
+      - backend_model_cache:/app/model_cache
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: clinops-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000/api
+    depends_on:
+      - backend
+
+volumes:
+  backend_uploads:
+  backend_outputs:
+  backend_model_cache:

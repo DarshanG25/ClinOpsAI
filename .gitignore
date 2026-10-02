@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+!.env.example
+*.db
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Project runtime artifacts (created at runtime, not part of the repo)
+backend/uploads/
+backend/outputs/
+backend/model_cache/
+.pytest_cache/
+
+# Local and external audio data (may contain sensitive or restricted material)
+data/raw/
+data/processed/
+
+# Temporary normalized audio used only during diarization
+clinops-diarization-*/

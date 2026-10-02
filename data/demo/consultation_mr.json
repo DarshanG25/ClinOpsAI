@@ -1,0 +1,6 @@
+{
+  "label": "SYNTHETIC DEMONSTRATION DATA — NOT REAL PATIENT DATA",
+  "language": "mr",
+  "patient": {"name": "Ganesh Patil", "age": 45, "gender": "male"},
+  "transcript": "Doctor: Kay tras hoto ahe? Patient: Mala tin divsapasun taap ani angadukhi ahe, ani pot dukhtay thoda. Doctor: He acidity mule hou shakte. Pantoprazole 40 mg roj sakali ekda, saat divas ghya. Ani Paracetamol 650 mg garaj asel tar din mein don vela ghya. Tikhat khane taalaa."
+}

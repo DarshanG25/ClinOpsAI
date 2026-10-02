@@ -1,0 +1,2 @@
+SYNTHETIC DEMONSTRATION DATA — NOT REAL PATIENT DATA
+Patient reports fever, headache and mild body ache for two days. Prescribed Paracetamol 500 mg twice daily for 3 days. Advised rest and fluids. No known drug allergies.

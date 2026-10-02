@@ -1,0 +1,6 @@
+{
+  "label": "SYNTHETIC DEMONSTRATION DATA — NOT REAL PATIENT DATA",
+  "language": "en",
+  "patient": {"name": "Ravi Kumar", "age": 34, "gender": "male"},
+  "transcript": "Doctor: What's the problem today? Patient: I have had fever and headache since yesterday, and a mild dry cough. Doctor: Any body ache? Patient: Yes, mild body ache too. Doctor: Okay, this looks like a viral fever. Take Paracetamol 500 mg twice daily for 3 days, and a cough syrup at night for the cough. Drink plenty of fluids and rest."
+}
