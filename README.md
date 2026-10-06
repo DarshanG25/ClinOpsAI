@@ -12,7 +12,9 @@ doctor-approved prescription:
 
 ```
 audio upload/record → ASR (speech-to-text) → transcript
-  → clinical entity extraction (symptoms/diagnoses/medications/precautions)
+  → speaker diarization → clinical relevance detection
+  → extractive clinical condensation → clinical entity extraction
+    (symptoms/diagnoses/medications/precautions)
   → candidate medicine recommendations
   → doctor review & edit
   → doctor approval / rejection
@@ -32,7 +34,7 @@ backend/app/
   db/database.py              SQLAlchemy engine/session (SQLite by default)
   models/domain.py            ORM: Doctor, Patient, Consultation, Transcript,
                                ClinicalEntity, Recommendation, Prescription,
-                               PrescriptionItem
+                               PrescriptionItem, ClinicalSummary
   schemas/api_models.py       Pydantic request/response schemas
   repositories/repository.py  Data-access layer (CRUD)
   api/routes/
@@ -41,6 +43,7 @@ backend/app/
   services/
     speech/whisper_service.py         faster-whisper ASR + explicit DEMO mode
     speech/speaker_diarization.py     pyannote speaker turns + cautious role inference
+    nlp/clinical_summary.py           explainable relevance scoring + extractive condensation
     nlp/entity_extractor.py           hybrid regex+dictionary clinical NLP
     recommendation/recommendation_service.py   transparent candidate scoring
     prescription/prescription_service.py       builds prescription payload
@@ -52,7 +55,7 @@ frontend/src/
   App.tsx, layouts/AppLayout.tsx      shell + disclaimer banner
   pages/HomePage.tsx                  dashboard / new consultation / workspace
   components/                         audio input, transcript viewer,
-                                       clinical-data + recommendation panel,
+                                       clinical summary, clinical-data + recommendation panel,
                                        doctor review/edit, prescription
                                        preview, PDF download, language picker
   hooks/useConversation.ts            drives the consultation state machine
@@ -155,9 +158,13 @@ See [`data/README.md`](data/README.md) for full details. In short:
 3. `POST /api/consultations/{id}/audio` → upload a WAV/MP3/M4A file (any
    audio works in `ASR_MODE=demo`; a labelled demo transcript is returned).
 4. `POST /api/consultations/{id}/process` → runs ASR → speaker diarization →
-  clinical extraction → recommendation generation in one call.
-5. `GET /api/consultations/{id}/transcript` and `/clinical-data` and
+   clinical relevance detection → clinical condensation → clinical extraction
+   → recommendation generation in one call. The source transcript/audio is
+   retained unchanged.
+5. `GET /api/consultations/{id}/transcript`, `/clinical-summary`, `/clinical-data` and
    `/recommendations` → inspect the pipeline output.
+    Older consultations without a stored summary can use
+    `POST /api/consultations/{id}/clinical-summary/generate` after transcription.
 6. `PUT /api/consultations/{id}/recommendations` → doctor edits the
    candidate list (or skip straight to step 7 to approve as-is).
 7. `POST /api/consultations/{id}/approve` (`approved: true`) → generates the
@@ -179,6 +186,8 @@ The same flow is available end-to-end from the React UI (`New Consultation`
 | POST | `/api/consultations/{id}/audio` | Upload audio |
 | POST | `/api/consultations/{id}/process` | Run ASR + clinical extraction + recommendations |
 | GET | `/api/consultations/{id}/transcript` | Get transcript |
+| GET | `/api/consultations/{id}/clinical-summary` | Get condensed clinical content and scored source segments |
+| POST | `/api/consultations/{id}/clinical-summary/generate` | Generate or refresh summary from an existing transcript |
 | PUT | `/api/consultations/{id}/speaker-roles` | Correct speaker roles without reprocessing audio |
 | GET | `/api/consultations/{id}/clinical-data` | Get extracted entities |
 | GET / POST / PUT | `/api/consultations/{id}/recommendations` | List / regenerate / doctor-edit candidates |
@@ -219,6 +228,20 @@ APPROVED/REJECTED`.
 - **Clinical NLP** is rule/dictionary-based (regex + a 21-medicine KB), not
   a trained medical NER model. It works well on the demo transcripts and
   similarly-phrased input but will miss unfamiliar phrasing.
+- **Clinical relevance and condensation** use explainable keyword/category
+  rules and select source excerpts by clinical-category priority, duplicate
+  removal, and a roughly three-minute source-speech budget. The output quotes
+  selected transcript segments with their timestamps; it does not generate
+  new clinical facts. `ClinicalSummary` stores this derived content, selected
+  segments, source references, method/version, and generation time separately
+  from the original `Transcript`. SQLite creates the additive table on startup.
+  This implementation is an academic, explainable prototype—not a validated
+  clinical summarization model. It can miss relevant phrasing or classify
+  segments incorrectly, and every AI-generated summary requires doctor
+  verification. If generation fails, the full transcript is preserved and
+  processing continues using that transcript for entity extraction.
+
+
 - **Translation** is a small fixed phrasebook for UI/PDF labels, not
   general-purpose machine translation of free text.
 - **Recommendation scoring** is a transparent indication-overlap heuristic

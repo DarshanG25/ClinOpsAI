@@ -13,13 +13,15 @@ from app.models import domain as m
 from app.repositories import repository as repo
 from app.schemas.api_models import (
     ConsultationCreate, ConsultationOut, AudioUploadResponse, ProcessResponse,
-    TranscriptOut, ClinicalDataOut, ClinicalEntityOut, RecommendationOut,
+    TranscriptOut, ClinicalDataOut, ClinicalEntityOut, ClinicalSummaryOut, RecommendationOut,
     RecommendationUpdateRequest, ApprovalRequest, PrescriptionOut,
     SpeakerRoleUpdateRequest,
 )
 from app.services.speech.whisper_service import transcribe_audio
 from app.services.speech.speaker_diarization import apply_speaker_roles, diarize_transcription
+from app.services.audio.audio_preprocessor import temporary_preprocessed_audio
 from app.services.nlp.entity_extractor import extract_clinical_data
+from app.services.nlp import clinical_summary
 from app.services.recommendation.recommendation_service import generate_recommendations
 from app.services.prescription.prescription_service import (
     build_prescription_items, summarize_diagnosis, default_precautions,
@@ -29,7 +31,7 @@ from app.services.pdf_generator.pdf_service import generate_prescription_pdf
 logger = logging.getLogger("clinops.consultations")
 router = APIRouter()
 
-ALLOWED_AUDIO_EXT = {".wav", ".mp3", ".m4a", ".mpeg", ".mpg", ".mp2"}
+ALLOWED_AUDIO_EXT = {".wav", ".mp3", ".m4a", ".mpeg", ".mpg", ".mp2", ".flac", ".ogg"}
 
 
 def _get_consultation_or_404(db: Session, consultation_id: str) -> m.Consultation:
@@ -74,16 +76,25 @@ async def upload_audio(consultation_id: str, file: UploadFile = File(...), db: S
     if ext not in ALLOWED_AUDIO_EXT:
         raise HTTPException(status_code=400, detail=f"Unsupported audio format '{ext}'. Allowed: {sorted(ALLOWED_AUDIO_EXT)}")
 
-    contents = await file.read()
-    if len(contents) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
-    if len(contents) > settings.max_audio_size:
-        raise HTTPException(status_code=413, detail=f"Audio file exceeds MAX_AUDIO_SIZE ({settings.max_audio_size} bytes)")
-
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     dest = upload_dir / f"{consultation_id}_{uuid.uuid4().hex[:8]}{ext}"
-    dest.write_bytes(contents)
+    uploaded_size = 0
+    try:
+        with dest.open("wb") as saved_audio:
+            while chunk := await file.read(1024 * 1024):
+                uploaded_size += len(chunk)
+                if uploaded_size > settings.max_audio_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Audio file exceeds MAX_AUDIO_SIZE ({settings.max_audio_size} bytes)",
+                    )
+                saved_audio.write(chunk)
+        if uploaded_size == 0:
+            raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
 
     repo.set_audio_path(db, consultation, str(dest))
 
@@ -93,7 +104,7 @@ async def upload_audio(consultation_id: str, file: UploadFile = File(...), db: S
     )
 
 
-# ---------- Process: ASR -> transcript -> clinical extraction -> recommendations ----------
+# ---------- Process: ASR -> transcript -> summary -> extraction -> recommendations ----------
 @router.post("/consultations/{consultation_id}/process", response_model=ProcessResponse)
 def process_consultation(consultation_id: str, db: Session = Depends(get_db)):
     consultation = _get_consultation_or_404(db, consultation_id)
@@ -103,17 +114,25 @@ def process_consultation(consultation_id: str, db: Session = Depends(get_db)):
     repo.set_consultation_status(db, consultation, m.ConsultationStatus.PROCESSING.value)
 
     try:
-        asr_result = transcribe_audio(consultation.audio_path, language_hint=consultation.language)
+        with temporary_preprocessed_audio(consultation.audio_path) as processed_audio_path:
+            asr_result = transcribe_audio(
+                processed_audio_path,
+                language_hint=consultation.language,
+                audio_is_preprocessed=True,
+            )
+            segments, diarization_status = diarize_transcription(
+                processed_audio_path,
+                asr_result.get("word_segments", []),
+                asr_result["segments"],
+                is_demo=asr_result["asr_mode"] == "demo",
+                audio_is_preprocessed=True,
+            )
     except Exception as exc:  # noqa: BLE001
-        repo.set_consultation_status(db, consultation, m.ConsultationStatus.FAILED.value, error_message=str(exc))
-        raise HTTPException(status_code=500, detail=f"ASR failed: {exc}")
-
-    segments, diarization_status = diarize_transcription(
-        consultation.audio_path,
-        asr_result.get("word_segments", []),
-        asr_result["segments"],
-        is_demo=asr_result["asr_mode"] == "demo",
-    )
+        error_message = f"Audio preprocessing or processing failed: {exc}"
+        repo.set_consultation_status(
+            db, consultation, m.ConsultationStatus.FAILED.value, error_message=error_message,
+        )
+        raise HTTPException(status_code=500, detail=error_message) from exc
 
     repo.upsert_transcript(
         db, consultation_id, text=asr_result["transcript"], language=asr_result["language"],
@@ -121,9 +140,30 @@ def process_consultation(consultation_id: str, db: Session = Depends(get_db)):
         diarization_status=diarization_status,
     )
     repo.set_consultation_status(db, consultation, m.ConsultationStatus.TRANSCRIBED.value)
+    repo.delete_clinical_summary(db, consultation_id)
+
+    summary_status = "failed"
+    extraction_text = asr_result["transcript"]
+    try:
+        summary_result = clinical_summary.generate_clinical_summary(segments)
+        repo.upsert_clinical_summary(
+            db, consultation_id,
+            summary_text=summary_result["summary_text"],
+            segment_scores=summary_result["segment_scores"],
+            relevant_segments=summary_result["relevant_segments"],
+            source_segment_ids=summary_result["source_segment_ids"],
+            status=summary_result["status"],
+            method=summary_result["method"],
+            version=summary_result["version"],
+        )
+        summary_status = summary_result["status"]
+        extraction_text = summary_result["summary_text"]
+    except Exception:  # noqa: BLE001 - transcript and downstream workflow must survive summary failure
+        db.rollback()
+        logger.exception("Clinical summary generation failed for consultation %s", consultation_id)
 
     # Clinical extraction
-    entities = extract_clinical_data(asr_result["transcript"])
+    entities = extract_clinical_data(extraction_text)
     repo.replace_clinical_entities(db, consultation_id, entities)
     status_after_extraction = (
         m.ConsultationStatus.CLINICAL_EXTRACTED.value if entities else m.ConsultationStatus.TRANSCRIBED.value
@@ -147,6 +187,7 @@ def process_consultation(consultation_id: str, db: Session = Depends(get_db)):
         segments=segments,
         asr_mode=asr_result["asr_mode"],
         diarization_status=diarization_status,
+        clinical_summary_status=summary_status,
     )
 
 
@@ -162,6 +203,39 @@ def get_transcript(consultation_id: str, db: Session = Depends(get_db)):
         segments=transcript.segments or [], asr_mode=transcript.asr_mode,
         diarization_status=transcript.diarization_status or "not_run",
     )
+
+
+@router.get("/consultations/{consultation_id}/clinical-summary", response_model=ClinicalSummaryOut)
+def get_clinical_summary(consultation_id: str, db: Session = Depends(get_db)):
+    _get_consultation_or_404(db, consultation_id)
+    summary = repo.get_clinical_summary(db, consultation_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Clinical summary not available. Generate it after transcription.")
+    return summary
+
+
+@router.post("/consultations/{consultation_id}/clinical-summary/generate", response_model=ClinicalSummaryOut)
+def generate_consultation_clinical_summary(consultation_id: str, db: Session = Depends(get_db)):
+    _get_consultation_or_404(db, consultation_id)
+    transcript = repo.get_transcript(db, consultation_id)
+    if not transcript:
+        raise HTTPException(status_code=404, detail="Transcript not available yet. Process audio first.")
+    try:
+        result = clinical_summary.generate_clinical_summary(transcript.segments or [])
+        return repo.upsert_clinical_summary(
+            db, consultation_id,
+            summary_text=result["summary_text"],
+            segment_scores=result["segment_scores"],
+            relevant_segments=result["relevant_segments"],
+            source_segment_ids=result["source_segment_ids"],
+            status=result["status"],
+            method=result["method"],
+            version=result["version"],
+        )
+    except Exception as exc:  # noqa: BLE001 - explicit API failure, no fabricated summary
+        db.rollback()
+        logger.exception("Clinical summary generation failed for consultation %s", consultation_id)
+        raise HTTPException(status_code=500, detail="Clinical summary generation failed.") from exc
 
 
 @router.put("/consultations/{consultation_id}/speaker-roles", response_model=TranscriptOut)

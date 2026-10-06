@@ -8,6 +8,10 @@ Run with:  cd backend && pytest -q
 """
 import os
 import sys
+import math
+import struct
+import wave
+from io import BytesIO
 from pathlib import Path
 
 # --- Force a throwaway test DB + demo ASR mode before importing the app ---
@@ -55,6 +59,21 @@ def consultation(client, patient):
     })
     assert r.status_code == 201
     return r.json()
+
+
+def _valid_test_wav() -> bytes:
+    buffer = BytesIO()
+    sample_rate = 16000
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(sample_rate)
+        frames = b"".join(
+            struct.pack("<h", int(12000 * math.sin(2 * math.pi * 440 * index / sample_rate)))
+            for index in range(sample_rate // 4)
+        )
+        audio.writeframes(frames)
+    return buffer.getvalue()
 
 
 # ---------- 1. Health ----------
@@ -108,7 +127,7 @@ def test_audio_upload_and_process(client, consultation):
                        files={"file": ("note.txt", b"hello", "text/plain")})
     assert bad.status_code == 400
 
-    files = {"file": ("sample.wav", b"FAKEWAVDATA" * 100, "audio/wav")}
+    files = {"file": ("sample.wav", _valid_test_wav(), "audio/wav")}
     r = client.post(f"/api/consultations/{cid}/audio", files=files)
     assert r.status_code == 200
     assert r.json()["status"] == "AUDIO_UPLOADED"
@@ -124,6 +143,26 @@ def test_audio_upload_and_process(client, consultation):
     r3 = client.get(f"/api/consultations/{cid}/transcript")
     assert r3.status_code == 200
     assert r3.json()["text"] == body["transcript"]
+
+
+def test_preprocessing_failure_marks_consultation_failed(client, patient, monkeypatch):
+    from app.services.audio import audio_preprocessor
+
+    consultation_response = client.post("/api/consultations", json={"patient_id": patient["id"]})
+    consultation_id = consultation_response.json()["id"]
+    uploaded = client.post(
+        f"/api/consultations/{consultation_id}/audio",
+        files={"file": ("failure.wav", _valid_test_wav(), "audio/wav")},
+    )
+    assert uploaded.status_code == 200
+    monkeypatch.setattr(audio_preprocessor.shutil, "which", lambda _: None)
+
+    processed = client.post(f"/api/consultations/{consultation_id}/process")
+
+    assert processed.status_code == 500
+    assert "Install FFmpeg" in processed.json()["detail"]
+    consultation = client.get(f"/api/consultations/{consultation_id}").json()
+    assert consultation["status"] == "FAILED"
 
 
 def test_process_without_audio_fails():
@@ -323,7 +362,7 @@ def test_rejection_flow(client, patient):
     cons = client.post("/api/consultations", json={"patient_id": patient["id"]}).json()
     cid = cons["id"]
     client.post(f"/api/consultations/{cid}/audio",
-                files={"file": ("a.wav", b"X" * 50, "audio/wav")})
+                files={"file": ("a.wav", _valid_test_wav(), "audio/wav")})
     client.post(f"/api/consultations/{cid}/process")
 
     doctor_id = cons["doctor_id"]
@@ -386,7 +425,7 @@ def test_end_to_end_synthetic_consultation():
         cid = consultation["id"]
 
         c.post(f"/api/consultations/{cid}/audio",
-               files={"file": ("demo.wav", b"SYNTHETIC" * 20, "audio/wav")})
+             files={"file": ("demo.wav", _valid_test_wav(), "audio/wav")})
 
         process = c.post(f"/api/consultations/{cid}/process").json()
         assert process["transcript"]
@@ -409,3 +448,96 @@ def test_end_to_end_synthetic_consultation():
 
         final = c.get(f"/api/consultations/{cid}").json()
         assert final["status"] == "PRESCRIPTION_GENERATED"
+
+
+def test_clinical_summary_endpoints_for_consultation_without_transcript(client, patient):
+    from app.db.database import SessionLocal
+    from app.repositories import repository as repo
+
+    consultation = client.post(
+        "/api/consultations", json={"patient_id": patient["id"]},
+    ).json()
+    cid = consultation["id"]
+
+    assert client.get(f"/api/consultations/{cid}/clinical-summary").status_code == 404
+    assert client.post(f"/api/consultations/{cid}/clinical-summary/generate").status_code == 404
+
+    db = SessionLocal()
+    try:
+        repo.upsert_transcript(
+            db, cid, text="Patient reports headache since yesterday.",
+            language="en",
+            segments=[{
+                "start": 1.25, "end": 3.5,
+                "text": "Patient reports headache since yesterday.",
+                "speaker_role": "Patient",
+            }],
+            asr_mode="demo",
+        )
+    finally:
+        db.close()
+
+    assert client.get(f"/api/consultations/{cid}/clinical-summary").status_code == 404
+    generated = client.post(f"/api/consultations/{cid}/clinical-summary/generate")
+    assert generated.status_code == 200
+    assert generated.json()["relevant_segments"][0]["start"] == 1.25
+
+
+def test_process_persists_summary_without_changing_full_transcript(client, patient):
+    consultation = client.post(
+        "/api/consultations", json={"patient_id": patient["id"], "language": "en"},
+    ).json()
+    cid = consultation["id"]
+    uploaded = client.post(
+        f"/api/consultations/{cid}/audio",
+        files={"file": ("summary.wav", _valid_test_wav(), "audio/wav")},
+    )
+    assert uploaded.status_code == 200
+
+    processed = client.post(f"/api/consultations/{cid}/process")
+    assert processed.status_code == 200
+    assert processed.json()["clinical_summary_status"] == "generated"
+
+    transcript = client.get(f"/api/consultations/{cid}/transcript").json()
+    summary_response = client.get(f"/api/consultations/{cid}/clinical-summary")
+    assert summary_response.status_code == 200
+    summary = summary_response.json()
+    assert transcript["text"] == processed.json()["transcript"]
+    assert summary["consultation_id"] == cid
+    assert summary["summary_text"]
+    assert summary["method"] == "keyword-extractive-v1"
+    assert len(summary["segment_scores"]) == len(transcript["segments"])
+    assert summary["relevant_segments"]
+    assert summary["source_segment_ids"] == [
+        segment["segment_id"] for segment in summary["relevant_segments"]
+    ]
+    assert all(segment["start"] is not None and segment["end"] is not None for segment in summary["relevant_segments"])
+
+    regenerated = client.post(f"/api/consultations/{cid}/clinical-summary/generate")
+    assert regenerated.status_code == 200
+    assert regenerated.json()["summary_text"] == summary["summary_text"]
+
+
+def test_summary_failure_preserves_transcript_and_continues_processing(client, patient, monkeypatch):
+    from app.services.nlp import clinical_summary
+
+    consultation = client.post(
+        "/api/consultations", json={"patient_id": patient["id"], "language": "en"},
+    ).json()
+    cid = consultation["id"]
+    client.post(
+        f"/api/consultations/{cid}/audio",
+        files={"file": ("summary-failure.wav", _valid_test_wav(), "audio/wav")},
+    )
+
+    def fail_summary(_segments):
+        raise RuntimeError("synthetic summarization failure")
+
+    monkeypatch.setattr(clinical_summary, "generate_clinical_summary", fail_summary)
+    processed = client.post(f"/api/consultations/{cid}/process")
+
+    assert processed.status_code == 200
+    assert processed.json()["clinical_summary_status"] == "failed"
+    assert client.get(f"/api/consultations/{cid}/transcript").json()["text"] == processed.json()["transcript"]
+    assert client.get(f"/api/consultations/{cid}/clinical-summary").status_code == 404
+    assert client.get(f"/api/consultations/{cid}/clinical-data").status_code == 200

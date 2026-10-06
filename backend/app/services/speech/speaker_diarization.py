@@ -1,18 +1,14 @@
 """Optional pyannote speaker diarization and conservative role inference."""
 from __future__ import annotations
 
-import json
 import logging
 import re
-import shutil
-import subprocess
 import tempfile
-import wave
 from pathlib import Path
 from typing import Any
 
 from app.config.settings import settings
-from app.services.audio.audio_preprocessor import ffmpeg_available
+from app.services.audio.audio_preprocessor import ffmpeg_available, normalize_audio_to_wav
 
 logger = logging.getLogger("clinops.diarization")
 
@@ -77,90 +73,9 @@ def _tracks_from_annotation(annotation: Any) -> list[dict[str, Any]]:
     return tracks
 
 
-def _probe_audio_metadata(audio_path: str) -> dict[str, Any] | None:
-    """Read source metadata for diagnostics; conversion is still done by FFmpeg."""
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        logger.warning("ffprobe is unavailable; source audio metadata cannot be logged")
-        return None
-    result = subprocess.run(
-        [
-            ffprobe, "-v", "error", "-select_streams", "a:0",
-            "-show_entries", "stream=codec_name,sample_rate,channels,sample_fmt",
-            "-show_entries", "format=format_name", "-of", "json", audio_path,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    metadata = json.loads(result.stdout)
-    streams = metadata.get("streams") or []
-    if not streams:
-        raise RuntimeError("The uploaded file does not contain an audio stream.")
-    stream = streams[0]
-    return {
-        "format": (metadata.get("format") or {}).get("format_name", Path(audio_path).suffix),
-        "sample_rate": stream.get("sample_rate", "unknown"),
-        "channels": stream.get("channels", "unknown"),
-        "codec": stream.get("codec_name", "unknown"),
-        "sample_format": stream.get("sample_fmt", "unknown"),
-    }
-
-
 def _normalize_audio_for_diarization(audio_path: str, normalized_path: str) -> None:
-    """Decode source audio once to a validated 16 kHz mono signed-16 WAV."""
-    try:
-        source_metadata = _probe_audio_metadata(audio_path)
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Could not inspect uploaded audio metadata: {exc}") from exc
-
-    if source_metadata:
-        logger.info(
-            "Diarization source audio: path=%s format=%s codec=%s sample_rate=%s "
-            "channels=%s sample_format=%s",
-            audio_path,
-            source_metadata["format"],
-            source_metadata["codec"],
-            source_metadata["sample_rate"],
-            source_metadata["channels"],
-            source_metadata["sample_format"],
-        )
-    else:
-        logger.info("Diarization source audio: path=%s format=%s", audio_path, Path(audio_path).suffix)
-
-    command = [
-        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", audio_path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
-        "-c:a", "pcm_s16le", "-f", "wav", normalized_path,
-    ]
-    try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        detail = getattr(exc, "stderr", None) or str(exc)
-        raise RuntimeError(f"FFmpeg could not normalize uploaded audio: {detail.strip()}") from exc
-
-    try:
-        with wave.open(normalized_path, "rb") as normalized:
-            sample_rate = normalized.getframerate()
-            channels = normalized.getnchannels()
-            sample_width = normalized.getsampwidth()
-            frames = normalized.getnframes()
-    except (OSError, wave.Error) as exc:
-        raise RuntimeError(f"FFmpeg output is not a readable WAV file: {exc}") from exc
-
-    if sample_rate != 16000 or channels != 1 or sample_width != 2 or frames <= 0:
-        raise RuntimeError(
-            "FFmpeg produced an invalid diarization WAV "
-            f"(sample_rate={sample_rate}, channels={channels}, sample_width={sample_width}, frames={frames})."
-        )
-    logger.info(
-        "Diarization audio normalized: path=%s sample_rate=%s channels=%s "
-        "sample_format=s16 codec=pcm_s16le frames=%s",
-        normalized_path,
-        sample_rate,
-        channels,
-        frames,
-    )
+    """Use the shared audio-normalization implementation for standalone calls."""
+    normalize_audio_to_wav(audio_path, normalized_path)
 
 
 def infer_speaker_roles(segments: list[dict[str, Any]]) -> dict[str, str]:
@@ -260,6 +175,7 @@ def diarize_transcription(
     fallback_segments: list[dict[str, Any]],
     *,
     is_demo: bool = False,
+    audio_is_preprocessed: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """Return speaker-attributed segments; never invent labels on failure."""
     if is_demo:
@@ -268,22 +184,27 @@ def diarize_transcription(
     if pipeline is None:
         status = "unavailable: " + (_pipeline_load_failed_reason or "Diarization model unavailable.")
         return _mark_unavailable(fallback_segments, status)
-    if not ffmpeg_available():
+    if not audio_is_preprocessed and not ffmpeg_available():
         return _mark_unavailable(
             fallback_segments,
             "unavailable: FFmpeg was not found. Install FFmpeg and add it to PATH.",
         )
     try:
-        # Keep the normalized copy isolated to diarization; Whisper and the
-        # application continue to use the untouched uploaded file.
-        with tempfile.TemporaryDirectory(prefix="clinops-diarization-") as temp_dir:
-            normalized_path = str(Path(temp_dir) / "diarization.wav")
-            _normalize_audio_for_diarization(audio_path, normalized_path)
-            logger.info("Diarization started: source=%s normalized=%s", audio_path, normalized_path)
+        if audio_is_preprocessed:
+            logger.info("Diarization started: normalized=%s", audio_path)
             try:
-                annotation = pipeline(normalized_path)
+                annotation = pipeline(str(Path(audio_path)))
             finally:
-                logger.info("Diarization ended: source=%s normalized=%s", audio_path, normalized_path)
+                logger.info("Diarization ended: normalized=%s", audio_path)
+        else:
+            with tempfile.TemporaryDirectory(prefix="clinops-diarization-") as temp_dir:
+                normalized_path = str(Path(temp_dir) / "diarization.wav")
+                _normalize_audio_for_diarization(audio_path, normalized_path)
+                logger.info("Diarization started: source=%s normalized=%s", audio_path, normalized_path)
+                try:
+                    annotation = pipeline(normalized_path)
+                finally:
+                    logger.info("Diarization ended: source=%s normalized=%s", audio_path, normalized_path)
         tracks = _tracks_from_annotation(annotation)
         if not tracks:
             return _mark_unavailable(fallback_segments, "no_speech_tracks")

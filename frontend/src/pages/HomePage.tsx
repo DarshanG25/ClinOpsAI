@@ -5,6 +5,7 @@ import { useConsultationWorkflow } from '../hooks/useConversation';
 import LanguageSelector from '../components/LanguageSelector';
 import ConversationInput from '../components/ConversationInput';
 import TranscriptViewer from '../components/TranscriptViewer';
+import ClinicalSummaryPanel from '../components/ClinicalSummaryPanel';
 import RecommendationPanel from '../components/RecommendationPanel';
 import DoctorApprovalPanel from '../components/DoctorApprovalPanel';
 import PrescriptionPreview from '../components/PrescriptionPreview';
@@ -198,6 +199,16 @@ function ConsultationWorkspace({ consultation, onBack }: { consultation: Consult
           loading={wf.processing}
           savingRoles={wf.saving}
           onSaveRoles={(roles) => wf.saveSpeakerRoles(consultation.id, roles)}
+        />
+      )}
+
+      {(wf.processing || wf.transcript) && (
+        <ClinicalSummaryPanel
+          summary={wf.clinicalSummary}
+          status={wf.clinicalSummaryStatus}
+          error={wf.clinicalSummaryError}
+          generating={wf.clinicalSummaryStatus === 'generating'}
+          onGenerate={() => wf.generateSummary(consultation.id)}
         />
       )}
 

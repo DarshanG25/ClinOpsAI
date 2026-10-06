@@ -61,6 +61,7 @@ class ProcessResponse(BaseModel):
     segments: List[dict]
     asr_mode: str
     diarization_status: str = "not_run"
+    clinical_summary_status: Optional[str] = None
 
 
 # ---------- Transcript / Clinical ----------
@@ -71,6 +72,32 @@ class TranscriptOut(BaseModel):
     segments: List[dict]
     asr_mode: str
     diarization_status: str = "not_run"
+
+
+class ClinicalRelevantSegmentOut(BaseModel):
+    segment_id: str
+    speaker: str
+    speaker_id: Optional[str] = None
+    start: Optional[float] = None
+    end: Optional[float] = None
+    text: str
+    category: str
+    categories: List[str]
+    relevance_score: float
+    is_clinically_relevant: bool
+
+
+class ClinicalSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    consultation_id: str
+    summary_text: str
+    segment_scores: List[ClinicalRelevantSegmentOut]
+    relevant_segments: List[ClinicalRelevantSegmentOut]
+    source_segment_ids: List[str]
+    status: str
+    method: str
+    version: str
+    generated_at: datetime
 
 
 class SpeakerRoleUpdateRequest(BaseModel):

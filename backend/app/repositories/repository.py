@@ -1,6 +1,7 @@
 """Data-access layer. Thin CRUD wrappers around SQLAlchemy sessions so the
 API/service layers never construct raw queries themselves.
 """
+from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.orm import Session
 
@@ -112,6 +113,50 @@ def update_transcript_speaker_roles(db: Session, transcript: m.Transcript, segme
     db.commit()
     db.refresh(transcript)
     return transcript
+
+
+# ---------- Clinical summary ----------
+def upsert_clinical_summary(
+    db: Session, consultation_id: str, *, summary_text: str, segment_scores: list,
+    relevant_segments: list, source_segment_ids: list, status: str,
+    method: str, version: str,
+) -> m.ClinicalSummary:
+    summary = (
+        db.query(m.ClinicalSummary)
+        .filter(m.ClinicalSummary.consultation_id == consultation_id)
+        .first()
+    )
+    if summary is None:
+        summary = m.ClinicalSummary(consultation_id=consultation_id)
+        db.add(summary)
+    summary.summary_text = summary_text
+    summary.segment_scores = segment_scores
+    summary.relevant_segments = relevant_segments
+    summary.source_segment_ids = source_segment_ids
+    summary.status = status
+    summary.method = method
+    summary.version = version
+    summary.generated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(summary)
+    return summary
+
+
+def delete_clinical_summary(db: Session, consultation_id: str) -> None:
+    (
+        db.query(m.ClinicalSummary)
+        .filter(m.ClinicalSummary.consultation_id == consultation_id)
+        .delete()
+    )
+    db.commit()
+
+
+def get_clinical_summary(db: Session, consultation_id: str) -> Optional[m.ClinicalSummary]:
+    return (
+        db.query(m.ClinicalSummary)
+        .filter(m.ClinicalSummary.consultation_id == consultation_id)
+        .first()
+    )
 
 
 # ---------- Clinical entities ----------

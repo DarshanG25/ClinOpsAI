@@ -5,6 +5,9 @@ __pycache__/
 .env
 .env.*
 !.env.example
+.env.local
+.env.development.local
+.env.production.local
 *.db
 .coverage
 htmlcov/
@@ -16,6 +19,16 @@ htmlcov/
 node_modules/
 dist/
 *.tsbuildinfo
+.npm/
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
 
 # Project runtime artifacts (created at runtime, not part of the repo)
 backend/uploads/
@@ -29,3 +42,7 @@ data/processed/
 
 # Temporary normalized audio used only during diarization
 clinops-diarization-*/
+
+# Optional local-only secrets / deployment settings
+backend/.env
+frontend/.env

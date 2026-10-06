@@ -1,7 +1,7 @@
 import axios from 'axios';
 import type {
   Patient, Consultation, Transcript, ClinicalData, Recommendation,
-  Prescription, ProcessResponse,
+  Prescription, ProcessResponse, ClinicalSummary,
 } from '../types';
 
 const api = axios.create({
@@ -58,6 +58,16 @@ export async function processConsultation(consultationId: string): Promise<Proce
 
 export async function getTranscript(consultationId: string): Promise<Transcript> {
   const { data } = await api.get(`/consultations/${consultationId}/transcript`);
+  return data;
+}
+
+export async function getClinicalSummary(consultationId: string): Promise<ClinicalSummary> {
+  const { data } = await api.get(`/consultations/${consultationId}/clinical-summary`);
+  return data;
+}
+
+export async function generateClinicalSummary(consultationId: string): Promise<ClinicalSummary> {
+  const { data } = await api.post(`/consultations/${consultationId}/clinical-summary/generate`);
   return data;
 }
 

@@ -10,7 +10,6 @@ interface Props {
  * available; otherwise the user can pick a WAV/MP3/M4A file to upload.
  */
 const ConversationInput = ({ onFileSelected, disabled }: Props) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [recording, setRecording] = useState(false);
   const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,19 +78,19 @@ const ConversationInput = ({ onFileSelected, disabled }: Props) => {
 
         <span className="text-slate-500 text-sm">or</span>
 
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+        <label
+          htmlFor="audio-file-input"
+          aria-disabled={disabled}
+          className={`rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
         >
           Upload audio file
-        </button>
+        </label>
         <input
-          ref={fileInputRef}
+          id="audio-file-input"
           type="file"
-          accept=".wav,.mp3,.m4a,audio/*"
+          disabled={disabled}
           onChange={handleFilePick}
-          className="hidden"
+          className="sr-only"
         />
       </div>
 

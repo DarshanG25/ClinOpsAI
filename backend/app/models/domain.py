@@ -1,6 +1,6 @@
 """SQLAlchemy ORM models for ClinOps-AI.
 
-Entities: Doctor, Patient, Consultation, Transcript, ClinicalEntity,
+Entities: Doctor, Patient, Consultation, Transcript, ClinicalSummary, ClinicalEntity,
 Recommendation, Prescription, PrescriptionItem.
 
 Consultation.status follows the state machine from the project brief:
@@ -89,6 +89,10 @@ class Consultation(Base):
     patient = relationship("Patient", back_populates="consultations")
     doctor = relationship("Doctor", back_populates="consultations")
     transcript = relationship("Transcript", back_populates="consultation", uselist=False)
+    clinical_summary = relationship(
+        "ClinicalSummary", back_populates="consultation", uselist=False,
+        cascade="all, delete-orphan",
+    )
     clinical_entities = relationship("ClinicalEntity", back_populates="consultation")
     recommendations = relationship("Recommendation", back_populates="consultation")
     prescription = relationship("Prescription", back_populates="consultation", uselist=False)
@@ -107,6 +111,24 @@ class Transcript(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     consultation = relationship("Consultation", back_populates="transcript")
+
+
+class ClinicalSummary(Base):
+    """Derived, source-linked clinical condensation; never replaces Transcript."""
+    __tablename__ = "clinical_summaries"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    consultation_id = Column(String, ForeignKey("consultations.id"), nullable=False, unique=True)
+    summary_text = Column(Text, nullable=False, default="")
+    segment_scores = Column(JSON, nullable=False, default=list)
+    relevant_segments = Column(JSON, nullable=False, default=list)
+    source_segment_ids = Column(JSON, nullable=False, default=list)
+    status = Column(String, nullable=False, default="generated")
+    method = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    consultation = relationship("Consultation", back_populates="clinical_summary")
 
 
 class ClinicalEntity(Base):

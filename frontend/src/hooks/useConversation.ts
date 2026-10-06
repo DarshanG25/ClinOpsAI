@@ -1,8 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import * as api from '../services/api';
 import type { RecommendationEditItem } from '../services/api';
 import type {
-  Consultation, Transcript, ClinicalData, Recommendation, Prescription,
+  Consultation, Transcript, ClinicalData, ClinicalSummary, Recommendation, Prescription,
 } from '../types';
 
 /**
@@ -13,6 +13,9 @@ import type {
 export function useConsultationWorkflow(consultation: Consultation | null) {
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [clinicalData, setClinicalData] = useState<ClinicalData | null>(null);
+  const [clinicalSummary, setClinicalSummary] = useState<ClinicalSummary | null>(null);
+  const [clinicalSummaryStatus, setClinicalSummaryStatus] = useState<string | null>(null);
+  const [clinicalSummaryError, setClinicalSummaryError] = useState<string | null>(null);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [prescription, setPrescription] = useState<Prescription | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -20,13 +23,73 @@ export function useConsultationWorkflow(consultation: Consultation | null) {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>(consultation?.status ?? 'CREATED');
 
+  useEffect(() => {
+    setTranscript(null);
+    setClinicalSummary(null);
+    setClinicalSummaryStatus(null);
+    setClinicalSummaryError(null);
+    setError(null);
+    if (consultation) setStatus(consultation.status);
+    if (!consultation || ['CREATED', 'AUDIO_UPLOADED', 'PROCESSING', 'FAILED'].includes(consultation.status)) {
+      return;
+    }
+
+    let active = true;
+    const loadSavedTranscript = async () => {
+      try {
+        const savedTranscript = await api.getTranscript(consultation.id);
+        if (!active) return;
+        setTranscript(savedTranscript);
+        try {
+          const savedSummary = await api.getClinicalSummary(consultation.id);
+          if (!active) return;
+          setClinicalSummary(savedSummary);
+          setClinicalSummaryStatus(savedSummary.status);
+        } catch (err: any) {
+          if (!active) return;
+          if (err?.response?.status === 404) {
+            setClinicalSummaryStatus('missing');
+          } else {
+            setClinicalSummaryError('Could not load the saved clinical summary.');
+          }
+        }
+      } catch (err: any) {
+        if (active && err?.response?.status !== 404) {
+          setError('Could not load the saved transcript.');
+        }
+      }
+    };
+    void loadSavedTranscript();
+    return () => {
+      active = false;
+    };
+  }, [consultation?.id, consultation?.status]);
+
   const reset = useCallback(() => {
     setTranscript(null);
     setClinicalData(null);
+    setClinicalSummary(null);
+    setClinicalSummaryStatus(null);
+    setClinicalSummaryError(null);
     setRecommendations([]);
     setPrescription(null);
     setError(null);
     setStatus('CREATED');
+  }, []);
+
+  const generateSummary = useCallback(async (consultationId: string) => {
+    setClinicalSummaryError(null);
+    setClinicalSummaryStatus('generating');
+    try {
+      const summary = await api.generateClinicalSummary(consultationId);
+      setClinicalSummary(summary);
+      setClinicalSummaryStatus(summary.status);
+    } catch (err: any) {
+      setClinicalSummaryStatus('failed');
+      setClinicalSummaryError(
+        err?.response?.data?.detail || 'Clinical summary generation failed. The full transcript is preserved.',
+      );
+    }
   }, []);
 
   const uploadAndProcess = useCallback(async (consultationId: string, file: File) => {
@@ -37,6 +100,12 @@ export function useConsultationWorkflow(consultation: Consultation | null) {
       setStatus('AUDIO_UPLOADED');
       const result = await api.processConsultation(consultationId);
       setStatus(result.status);
+      setClinicalSummaryStatus(result.clinical_summary_status ?? null);
+      setClinicalSummaryError(
+        result.clinical_summary_status === 'failed'
+          ? 'Clinical summary could not be generated. The full transcript is preserved.'
+          : null,
+      );
 
       const [t, cd, recs] = await Promise.all([
         api.getTranscript(consultationId),
@@ -46,6 +115,17 @@ export function useConsultationWorkflow(consultation: Consultation | null) {
       setTranscript(t);
       setClinicalData(cd);
       setRecommendations(recs);
+      if (result.clinical_summary_status !== 'failed') {
+        try {
+          const summary = await api.getClinicalSummary(consultationId);
+          setClinicalSummary(summary);
+          setClinicalSummaryStatus(summary.status);
+        } catch (summaryErr: any) {
+          if (summaryErr?.response?.status !== 404) {
+            setClinicalSummaryError('Clinical summary is currently unavailable. The full transcript is preserved.');
+          }
+        }
+      }
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Processing failed. Please try again.');
     } finally {
@@ -121,8 +201,10 @@ export function useConsultationWorkflow(consultation: Consultation | null) {
   }, []);
 
   return {
-    transcript, clinicalData, recommendations, prescription, status,
+    transcript, clinicalData, clinicalSummary, clinicalSummaryStatus, clinicalSummaryError,
+    recommendations, prescription, status,
     processing, saving, error,
     uploadAndProcess, saveEdits, saveSpeakerRoles, approve, reject, reset,
+    generateSummary,
   };
 }

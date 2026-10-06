@@ -55,6 +55,31 @@ export interface Transcript {
   diarization_status?: string;
 }
 
+export interface ClinicalRelevantSegment {
+  segment_id: string;
+  speaker: string;
+  speaker_id?: string | null;
+  start?: number | null;
+  end?: number | null;
+  text: string;
+  category: string;
+  categories: string[];
+  relevance_score: number;
+  is_clinically_relevant: boolean;
+}
+
+export interface ClinicalSummary {
+  consultation_id: string;
+  summary_text: string;
+  segment_scores: ClinicalRelevantSegment[];
+  relevant_segments: ClinicalRelevantSegment[];
+  source_segment_ids: string[];
+  status: 'generated' | 'no_relevant_content';
+  method: string;
+  version: string;
+  generated_at: string;
+}
+
 export interface ClinicalEntity {
   id: string;
   entity_type: 'symptom' | 'diagnosis' | 'medication' | 'precaution';
@@ -120,4 +145,5 @@ export interface ProcessResponse {
   segments: TranscriptSegment[];
   asr_mode: 'whisper' | 'demo';
   diarization_status?: string;
+  clinical_summary_status?: string | null;
 }

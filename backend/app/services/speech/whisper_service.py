@@ -105,7 +105,12 @@ def _segment_to_dict(segment, language: str) -> dict:
     }
 
 
-def transcribe_audio(audio_path: str, language_hint: Optional[str] = None) -> dict:
+def transcribe_audio(
+    audio_path: str,
+    language_hint: Optional[str] = None,
+    *,
+    audio_is_preprocessed: bool = False,
+) -> dict:
     """Returns {language, transcript, segments, asr_mode}.
 
     asr_mode is always one of "whisper" or "demo" so callers/UI can display
@@ -113,17 +118,18 @@ def transcribe_audio(audio_path: str, language_hint: Optional[str] = None) -> di
     """
     mode = settings.asr_mode.lower()
     source_path = audio_path
-
-    try:
-        source_path = preprocess_audio_for_asr(audio_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Preprocessing failed for %s (%s); continuing with original file.", audio_path, exc)
+    if not audio_is_preprocessed:
+        try:
+            source_path = preprocess_audio_for_asr(audio_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Preprocessing failed for %s (%s); continuing with original file.", audio_path, exc)
 
     if mode in ("auto", "whisper"):
         model = _load_whisper_model()
         if model is not None:
             try:
                 supported_lang = language_hint if language_hint in settings.supported_languages else None
+                logger.info("Whisper VAD enabled; silence remains on the original timeline")
                 segments_iter, info = model.transcribe(
                     source_path,
                     language=supported_lang,

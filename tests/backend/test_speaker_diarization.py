@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 from app.services.speech import speaker_diarization as diarization
 
 
@@ -78,6 +80,27 @@ def test_normalization_failure_is_reported_without_fabricated_speakers(monkeypat
     assert segments[0]["speaker_id"] is None
     assert segments[0]["speaker_role"] is None
     assert segments[0]["text"] == "Original transcript."
+
+
+def test_diarization_accepts_shared_preprocessed_wav(monkeypatch, tmp_path):
+    pipeline = FakePipeline()
+    audio_path = tmp_path / "diarization.wav"
+    audio_path.write_bytes(b"already normalized")
+    monkeypatch.setattr(diarization, "_load_pipeline", lambda: pipeline)
+    monkeypatch.setattr(diarization, "ffmpeg_available", lambda: False)
+    monkeypatch.setattr(
+        diarization,
+        "_normalize_audio_for_diarization",
+        lambda *_: pytest.fail("shared normalized audio must not be converted again"),
+    )
+
+    _, status = diarization.diarize_transcription(
+        str(audio_path), [], [{"start": 0.0, "end": 1.0, "text": "Transcript."}],
+        audio_is_preprocessed=True,
+    )
+
+    assert status == "word_timestamps_unavailable"
+    assert pipeline.received_path == audio_path
 
 
 def test_speaker_role_correction_preserves_internal_ids():
