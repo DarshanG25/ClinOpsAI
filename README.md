@@ -78,6 +78,8 @@ data/
 
 ## Setup & run commands
 
+Use **Python 3.11** for the backend (the Docker image uses the same version).
+
 ### Audio preprocessing / long recordings
 
 For real consultation recordings, install FFmpeg before running the ASR pipeline:
@@ -91,6 +93,16 @@ brew install ffmpeg
 
 # Ubuntu/Debian
 sudo apt-get install ffmpeg
+```
+
+If `pip install` fails with `pkg-config could not find libraries` for
+`avformat`, `avcodec`, or related libraries, PyAV is being built from source.
+On Ubuntu/Debian, install its build dependencies and retry:
+
+```bash
+sudo apt-get install pkg-config libavformat-dev libavcodec-dev \
+  libavdevice-dev libavutil-dev libavfilter-dev libswscale-dev \
+  libswresample-dev
 ```
 
 The backend's preprocessing step converts uploaded recordings to a mono 16 kHz WAV, normalizes loudness, and keeps the original file untouched. This is compatible with the current long-recording workflow and avoids assuming every consultation is only a few seconds long.
@@ -111,8 +123,9 @@ For Docker Compose, provide `HF_TOKEN` in the environment used to run `docker co
 
 ```bash
 cd backend
-python3 -m venv .venv && source .venv/bin/activate   # optional but recommended
-pip install -r requirements.txt
+python3.11 -m venv .venv && source .venv/bin/activate
+python -m pip install --upgrade pip "setuptools<81" wheel
+python -m pip install -r requirements.txt
 cp ../.env.example .env   # then edit values if needed
 uvicorn app.main:app --reload --port 8000
 ```
