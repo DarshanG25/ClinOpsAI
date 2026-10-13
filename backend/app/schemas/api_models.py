@@ -114,6 +114,9 @@ class ClinicalEntityOut(BaseModel):
     frequency: Optional[str] = None
     duration: Optional[str] = None
     route: Optional[str] = None
+    status: Optional[str] = None
+    evidence: Optional[str] = None
+    context: Optional[str] = None
     confidence: float
 
 

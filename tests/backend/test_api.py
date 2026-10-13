@@ -225,6 +225,42 @@ def test_extraction_never_hardcoded_for_unrelated_text():
     assert entities == []  # nothing clinical in this sentence -> empty, not fabricated
 
 
+def test_clinical_extraction_handles_negation_and_multiple_findings():
+    from app.services.nlp.entity_extractor import extract_clinical_data
+
+    entities = extract_clinical_data(
+        "No fever but persistent cough. The patient denies asthma. I do not have diabetes."
+    )
+    by_name = {e["normalized"]: e for e in entities if e.get("normalized")}
+
+    assert by_name["fever"]["status"] == "negated"
+    assert by_name["cough"]["status"] == "positive"
+    assert by_name["asthma"]["status"] == "negated"
+    assert by_name["diabetes"]["status"] == "negated"
+
+
+def test_recommendations_only_from_explicit_orders_and_preserve_details():
+    from app.services.recommendation.recommendation_service import generate_recommendations
+
+    entities = [
+        {"entity_type": "symptom", "Normalized": "fever", "normalized": "fever", "status": "positive"},
+        {"entity_type": "medication", "text": "Paracetamol", "normalized": "Paracetamol",
+         "status": "doctor_ordered", "dosage": "500 mg", "frequency": "twice daily",
+         "duration": "3 days", "route": "oral"},
+    ]
+    recs = generate_recommendations(entities)
+    assert recs
+    assert recs[0]["medicine"] == "Paracetamol"
+    assert recs[0]["dosage"] == "500 mg"
+    assert recs[0]["frequency"] == "twice daily"
+    assert recs[0]["duration"] == "3 days"
+
+    assert generate_recommendations([{"entity_type": "symptom", "normalized": "fever", "status": "positive"}]) == []
+    assert generate_recommendations([
+        {"entity_type": "medication", "text": "Metformin", "normalized": "Metformin", "status": "historical"}
+    ]) == []
+
+
 # ---------- 8. Recommendation ----------
 def test_recommendations_generated(client, consultation):
     cid = consultation["id"]

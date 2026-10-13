@@ -74,6 +74,71 @@ PRECAUTION_TERMS = [
     ("no known drug allergies", "No known drug allergies reported"),
 ]
 
+_NEGATION_CUES = (
+    "no ", "not ", "never ", "denies ", "deny ", "denied ", "without ",
+    "does not have ", "do not have ", "did not have ", "doesn't have ", "don't have ",
+    "is not ", "isn't ", "was not ", "wasn't ", "negative for ", "ruled out ",
+    "rule out ", "no history of ", "denial of ", "free from ",
+    "without any ", "absent ", "absence of ",
+)
+_UNCERTAIN_CUES = ("maybe", "may be", "might be", "possible", "possibly", "uncertain", "likely", "suspected", "questionable")
+_HISTORY_CUES = ("history of", "past history", "previously", "used to", "had before", "in the past", "prior history", "was on", "took in the past", "stopped taking")
+_FAMILY_HISTORY_CUES = ("family history of", "mother has", "father has", "sister has", "brother has", "grandmother had", "grandfather had")
+_CLAUSE_BOUNDARY_RE = re.compile(r"\b(?:but|however|although|yet|though|except)\b", re.IGNORECASE)
+
+
+def _split_clauses(text: str) -> List[str]:
+    parts = re.split(r"[.;!?]+|\b(?:but|however|although|yet|though|except)\b", text, flags=re.IGNORECASE)
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+def _determine_status(text: str, term: str) -> str:
+    lowered = text.lower()
+    term_lower = term.lower()
+    if _TERM_IN_CONTEXT(lowered, term_lower, _FAMILY_HISTORY_CUES):
+        return "family_history"
+    if _TERM_IN_CONTEXT(lowered, term_lower, _HISTORY_CUES):
+        return "historical"
+    if _TERM_IN_CONTEXT(lowered, term_lower, _NEGATION_CUES):
+        return "negated"
+    if _TERM_IN_CONTEXT(lowered, term_lower, _UNCERTAIN_CUES):
+        return "uncertain"
+    return "positive"
+
+
+def _TERM_IN_CONTEXT(text: str, term: str, cues: tuple[str, ...]) -> bool:
+    term_index = text.find(term)
+    if term_index == -1:
+        return False
+    window_start = max(0, term_index - 60)
+    window_end = min(len(text), term_index + len(term) + 60)
+    window = text[window_start:window_end]
+    for cue in cues:
+        if cue in window:
+            return True
+    return False
+
+
+def _classify_sentence_term(sentence: str, term: str) -> str:
+    clauses = _split_clauses(sentence)
+    if not clauses:
+        clauses = [sentence]
+    for clause in clauses:
+        lower_clause = clause.lower()
+        if term.lower() not in lower_clause:
+            continue
+        if any(cue in lower_clause for cue in ("family history of", "mother has", "father has", "grandmother had", "grandfather had", "sister has", "brother has")):
+            return "family_history"
+        if any(cue in lower_clause for cue in ("history of", "past history", "previously", "used to", "in the past", "prior history", "was on", "stopped taking")):
+            return "historical"
+        if any(cue in lower_clause for cue in ("no ", "not ", "never ", "denies ", "deny ", "denied ", "without ", "does not have ", "do not have ", "did not have ", "negative for ", "ruled out ", "rule out ", "negative", "without any ")):
+            return "negated"
+        if any(cue in lower_clause for cue in ("maybe", "may be", "might be", "possible", "possibly", "uncertain", "likely", "suspected")):
+            return "uncertain"
+        return "positive"
+    return "positive"
+
+
 # --- Hindi/Marathi -> canonical English normalization for dosage phrasing ---
 _HI_MR_NUMBERS = {
     "ek": "1", "do": "2", "don": "2", "teen": "3", "tin": "3", "char": "4",
@@ -133,6 +198,8 @@ class ExtractedMedication:
     frequency: Optional[str] = None
     duration: Optional[str] = None
     route: Optional[str] = None
+    status: str = "unknown"
+    evidence: Optional[str] = None
     confidence: float = 0.75
 
 
@@ -150,6 +217,26 @@ def _find_window(text: str, start: int, end: int, radius: int = 45) -> str:
     return text[lo:hi]
 
 
+def _medication_context(normalized_text: str, span_start: int, span_end: int) -> str:
+    window_start = max(0, span_start - 80)
+    window_end = min(len(normalized_text), span_end + 80)
+    context = normalized_text[window_start:window_end]
+    lower = context.lower()
+    if any(cue in lower for cue in ("family history of", "mother has", "father has", "grandmother had", "grandfather had")):
+        return "family_history"
+    if any(cue in lower for cue in ("history of", "past history", "previously", "used to", "in the past", "prior history", "stopped taking")):
+        return "historical"
+    if any(cue in lower for cue in ("i take", "currently taking", "takes", "tak[ei]ng", "patient is on", "already taking")):
+        return "patient_reported"
+    if any(cue in lower for cue in ("take ", "prescribe", "start ", "continue ", "stop taking", "order", "prescribed")):
+        return "doctor_ordered"
+    if any(cue in lower for cue in ("maybe", "may be", "might be", "if prescribed", "consider", "could use")):
+        return "uncertain"
+    if any(cue in lower for cue in ("no ", "not ", "never ", "without ", "denies ", "do not have", "did not have", "negative for")):
+        return "negated"
+    return "unknown"
+
+
 def extract_medications(normalized_text: str) -> List[ExtractedMedication]:
     found: List[ExtractedMedication] = []
     seen_spans = set()
@@ -162,9 +249,6 @@ def extract_medications(normalized_text: str) -> List[ExtractedMedication]:
             seen_spans.add(span)
             med = _MED_LOOKUP[term]
             window = _find_window(normalized_text, span[0], span[1])
-            # Prefer text *after* the medicine name (standard phrasing is
-            # "Medicine 500mg twice daily for 3 days"); fall back to the
-            # full window (including preceding context) if nothing is found.
             window_after = normalized_text[span[1]: min(len(normalized_text), span[1] + 60)]
 
             dosage_match = DOSAGE_RE.search(window_after) or DOSAGE_RE.search(window)
@@ -195,6 +279,11 @@ def extract_medications(normalized_text: str) -> List[ExtractedMedication]:
                     route = route_val
                     break
 
+            context = _medication_context(normalized_text, span[0], span[1])
+            evidence = window.rstrip()
+            if not evidence:
+                evidence = normalized_text[max(0, span[0] - 30):min(len(normalized_text), span[1] + 30)].strip()
+
             found.append(ExtractedMedication(
                 text=normalized_text[span[0]:span[1]],
                 normalized=med["generic_name"],
@@ -202,6 +291,8 @@ def extract_medications(normalized_text: str) -> List[ExtractedMedication]:
                 frequency=frequency,
                 duration=duration,
                 route=route,
+                status=context,
+                evidence=evidence,
                 confidence=0.85 if dosage and frequency else 0.65,
             ))
     return found
@@ -233,22 +324,51 @@ def extract_clinical_data(transcript: str) -> List[dict]:
         return []
 
     normalized = _normalize_numbers(transcript)
-
     rows: List[dict] = []
+    seen: set[tuple[str, str, str]] = set()
 
-    for symptom in extract_terms(normalized, SYMPTOM_TERMS):
-        rows.append({
-            "entity_type": "symptom", "text": symptom, "normalized": symptom,
-            "confidence": 0.7,
-        })
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", normalized):
+        if not sentence.strip():
+            continue
+        sentence_lower = sentence.lower()
+        for term in SYMPTOM_TERMS:
+            if re.search(r"\b" + re.escape(term.lower()) + r"\b", sentence_lower):
+                status = _classify_sentence_term(sentence, term)
+                key = ("symptom", term.lower(), status)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "entity_type": "symptom",
+                    "text": term,
+                    "normalized": term,
+                    "status": status,
+                    "context": sentence.strip(),
+                    "confidence": 0.7,
+                })
 
-    for diagnosis in extract_terms(normalized, DIAGNOSIS_TERMS):
-        rows.append({
-            "entity_type": "diagnosis", "text": diagnosis, "normalized": diagnosis,
-            "confidence": 0.7,
-        })
+        for term in DIAGNOSIS_TERMS:
+            if re.search(r"\b" + re.escape(term.lower()) + r"\b", sentence_lower):
+                status = _classify_sentence_term(sentence, term)
+                key = ("diagnosis", term.lower(), status)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "entity_type": "diagnosis",
+                    "text": term,
+                    "normalized": term,
+                    "status": status,
+                    "context": sentence.strip(),
+                    "confidence": 0.7,
+                })
 
     for med in extract_medications(normalized):
+        status = med.status
+        key = ("medication", med.normalized.lower(), status)
+        if key in seen:
+            continue
+        seen.add(key)
         rows.append({
             "entity_type": "medication",
             "text": med.text,
@@ -257,12 +377,21 @@ def extract_clinical_data(transcript: str) -> List[dict]:
             "frequency": med.frequency,
             "duration": med.duration,
             "route": med.route,
+            "status": status,
+            "evidence": med.evidence,
             "confidence": med.confidence,
         })
 
     for precaution in extract_precautions(normalized):
+        key = ("precaution", precaution.lower(), "positive")
+        if key in seen:
+            continue
+        seen.add(key)
         rows.append({
-            "entity_type": "precaution", "text": precaution, "normalized": precaution,
+            "entity_type": "precaution",
+            "text": precaution,
+            "normalized": precaution,
+            "status": "positive",
             "confidence": 0.6,
         })
 

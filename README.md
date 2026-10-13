@@ -52,8 +52,13 @@ backend/app/
     feedback_learning/feedback_updater.py       stub for future adaptive learning
 
 frontend/src/
-  App.tsx, layouts/AppLayout.tsx      shell + disclaimer banner
-  pages/HomePage.tsx                  dashboard / new consultation / workspace
+  App.tsx                             browser routes for doctor, patient, login, register
+  layouts/AppLayout.tsx               responsive doctor/patient portal shell
+  pages/DoctorPages.tsx               dashboard, directory, records, visit/prescription lists
+  pages/ConsultationDetailPage.tsx    consultation review and existing audio workflow
+  pages/PatientPages.tsx              patient portal (explicitly gated on missing API contracts)
+  pages/AuthPage.tsx                  role-aware login/register UI
+  pages/HomePage.tsx                  new consultation audio/workflow experience
   components/                         audio input, transcript viewer,
                                        clinical summary, clinical-data + recommendation panel,
                                        doctor review/edit, prescription
@@ -143,6 +148,25 @@ cp .env.example .env   # VITE_API_BASE_URL=http://localhost:8000/api
 npm run dev             # dev server, http://localhost:5173
 npm run build            # production build -> frontend/dist
 ```
+
+The frontend has doctor routes under `/doctor/*`, patient routes under
+`/patient/*`, plus `/login` and `/register`. The backend currently has no
+authentication or authorization, so the role selector is informational only;
+the frontend does not send or store credentials and displays a prototype
+warning on portal pages. Do not expose this prototype to real patient data.
+
+The doctor workspace reads the existing patient and consultation endpoints and
+uses the existing transcript, clinical-data, recommendation, prescription, and
+PDF endpoints. The frontend does not fabricate appointment, test, document,
+allergy, or family-history records. Those features require backend contracts
+before they can be populated. The patient portal deliberately does not fetch
+the global doctor endpoints: a secure patient login and patient-scoped APIs
+are needed first. In particular, patient-scoped consultation/history,
+approved-prescription, test-result, appointment/follow-up, and profile
+endpoints are missing. Authentication endpoints (`POST /api/auth/login`,
+`POST /api/auth/register` or an equivalent identity/session contract) and
+server-side role authorization are also missing. Login and registration
+therefore explain the limitation and never pretend an account was created.
 
 ### Docker (optional)
 

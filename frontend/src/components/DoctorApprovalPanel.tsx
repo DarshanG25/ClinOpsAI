@@ -4,7 +4,7 @@ import type { RecommendationEditItem } from '../services/api';
 
 interface Props {
   recommendations: Recommendation[];
-  onSaveEdits: (items: RecommendationEditItem[]) => Promise<void>;
+  onSaveEdits: (items: RecommendationEditItem[]) => Promise<boolean | void>;
   onApprove: (diagnosisSummary: string, precautions: string[]) => Promise<void>;
   onReject: (reason: string) => Promise<void>;
   saving?: boolean;
@@ -29,6 +29,7 @@ const DoctorApprovalPanel = ({ recommendations, onSaveEdits, onApprove, onReject
   const [precautionsText, setPrecautionsText] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
   const [showReject, setShowReject] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     setRows(toEditable(recommendations));
@@ -46,13 +47,18 @@ const DoctorApprovalPanel = ({ recommendations, onSaveEdits, onApprove, onReject
       { _key: `new-${Date.now()}`, medicine: '', dosage: '', frequency: '', duration: '', route: '', reason: '' },
     ]);
 
-  const handleSave = async () => {
+  const handleSave = async (): Promise<boolean> => {
+    if (rows.some((row) => !row.medicine.trim())) {
+      setValidationError('Complete or remove each blank medication row before saving.');
+      return false;
+    }
+    setValidationError(null);
     const items = rows.filter((r) => r.medicine.trim().length > 0).map(({ _key, ...rest }) => rest);
-    await onSaveEdits(items);
+    return (await onSaveEdits(items)) !== false;
   };
 
   const handleApprove = async () => {
-    await handleSave();
+    if (!(await handleSave())) return;
     const precautions = precautionsText.split('\n').map((p) => p.trim()).filter(Boolean);
     await onApprove(diagnosisSummary, precautions);
   };
@@ -112,6 +118,7 @@ const DoctorApprovalPanel = ({ recommendations, onSaveEdits, onApprove, onReject
           + Add medicine
         </button>
       </div>
+      {validationError && <p className="mt-2 text-sm text-rose-400" role="alert">{validationError}</p>}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <div>

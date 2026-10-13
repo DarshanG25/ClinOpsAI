@@ -24,6 +24,11 @@ export async function listPatients(): Promise<Patient[]> {
   return data;
 }
 
+export async function getPatient(id: string): Promise<Patient> {
+  const { data } = await api.get(`/patients/${id}`);
+  return data;
+}
+
 // ---------- Consultations ----------
 export async function createConsultation(payload: {
   patient_id: string; doctor_id?: string; language?: string; notes?: string;

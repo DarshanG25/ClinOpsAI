@@ -157,12 +157,13 @@ def process_consultation(consultation_id: str, db: Session = Depends(get_db)):
             version=summary_result["version"],
         )
         summary_status = summary_result["status"]
-        extraction_text = summary_result["summary_text"]
     except Exception:  # noqa: BLE001 - transcript and downstream workflow must survive summary failure
         db.rollback()
         logger.exception("Clinical summary generation failed for consultation %s", consultation_id)
 
-    # Clinical extraction
+    # Clinical extraction must use the original transcript (or a validated copy of
+    # it) so negations, history, and medication details are not lost when a short
+    # generated summary omits clinically significant phrases.
     entities = extract_clinical_data(extraction_text)
     repo.replace_clinical_entities(db, consultation_id, entities)
     status_after_extraction = (

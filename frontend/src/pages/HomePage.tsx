@@ -62,7 +62,8 @@ function NewConsultationForm({ onCreated }: { onCreated: (c: Consultation) => vo
       const consultation = await api.createConsultation({ patient_id: patient.id, language });
       onCreated(consultation);
     } catch (err) {
-      setError('Could not create the consultation. Is the backend running?');
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(detail || 'Could not create the consultation. Check that the backend is running.');
     } finally {
       setLoading(false);
     }
@@ -84,6 +85,8 @@ function NewConsultationForm({ onCreated }: { onCreated: (c: Consultation) => vo
           onChange={(e) => setAge(e.target.value)}
           placeholder="Age"
           type="number"
+          min={1}
+          max={130}
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
         />
         <select
@@ -118,13 +121,19 @@ function NewConsultationForm({ onCreated }: { onCreated: (c: Consultation) => vo
 function Dashboard({ onSelect, onNew }: { onSelect: (c: Consultation) => void; onNew: () => void }) {
   const [consultations, setConsultations] = useState<Consultation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
     api.listConsultations()
-      .then(setConsultations)
-      .catch(() => setConsultations([]))
-      .finally(() => setLoading(false));
-  }, []);
+      .then((rows) => { if (active) setConsultations(rows); })
+      .catch(() => { if (active) setError('Could not load consultations. Check that the backend is running.'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [refresh]);
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
@@ -139,6 +148,11 @@ function Dashboard({ onSelect, onNew }: { onSelect: (c: Consultation) => void; o
       </div>
       {loading ? (
         <p className="mt-3 text-sm text-slate-500">Loading…</p>
+      ) : error ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-rose-700" role="alert">
+          <span>{error}</span>
+          <button type="button" className="rounded border border-slate-300 px-3 py-1.5" onClick={() => setRefresh((value) => value + 1)}>Try again</button>
+        </div>
       ) : consultations.length === 0 ? (
         <p className="mt-3 text-sm text-slate-500">No consultations yet. Create one to get started.</p>
       ) : (

@@ -55,62 +55,59 @@ def _term_overlap_score(condition_terms: List[str], indications: List[str]) -> f
     return hits / max(len(condition_terms), 1)
 
 
-def generate_recommendations(clinical_entities: List[dict]) -> List[dict]:
-    """clinical_entities: list of dicts with keys entity_type/text/normalized/
-    dosage/frequency/duration/route (as produced by the NLP extractor /
-    ClinicalEntity rows). Returns a list of recommendation dicts ready for
-    the Recommendation repository.
-    """
-    symptoms = [e["normalized"].lower() for e in clinical_entities if e.get("entity_type") == "symptom"]
-    diagnoses = [e["normalized"].lower() for e in clinical_entities if e.get("entity_type") == "diagnosis"]
-    condition_terms = list({*symptoms, *diagnoses})
+def _recommender_safe_status(entity: dict) -> bool:
+    status = str(entity.get("status") or "positive").lower()
+    if status in {"negated", "historical", "family_history", "uncertain", "unknown", "patient_reported", "hypothetical", "ambiguous"}:
+        return False
+    text = (entity.get("text") or "").lower()
+    if any(marker in text for marker in ("i take", "currently taking", "used to take", "stopped taking", "patient says")):
+        return False
+    return True
 
-    mentioned_meds = {
-        e["normalized"]: e for e in clinical_entities if e.get("entity_type") == "medication"
-    }
+
+def generate_recommendations(clinical_entities: List[dict]) -> List[dict]:
+    """Generate medication recommendations only from explicit clinician-matched
+    medication records in the transcript. Never invent missing dosage, frequency,
+    or duration, and never infer a prescription from symptoms alone.
+    """
+    explicit_meds = [
+        e for e in clinical_entities
+        if e.get("entity_type") == "medication" and _recommender_safe_status(e)
+    ]
+    if not explicit_meds:
+        return []
 
     scored: List[dict] = []
+    for entity in explicit_meds:
+        name = entity.get("normalized") or entity.get("text")
+        if not name:
+            continue
+        status = str(entity.get("status") or "positive").lower()
+        dosage = entity.get("dosage")
+        frequency = entity.get("frequency")
+        duration = entity.get("duration")
+        route = entity.get("route")
+        reason = "Explicit medication details recorded in the consultation; clinician review required before prescription."
+        if status == "doctor_ordered":
+            reason = "Medication appears to be explicitly ordered or prescribed during the consultation."
+        elif status == "patient_reported":
+            continue
+        if not dosage and not frequency and not duration:
+            reason = "Medication name is present but dose/frequency/duration are not explicit; clinician review required."
 
-    # 1. Medicines already mentioned by the doctor -> highest-confidence candidates
-    for name, entity in mentioned_meds.items():
-        med_kb = next((m for m in MEDICINES if m["generic_name"].lower() == name.lower()), None)
-        overlap = _term_overlap_score(condition_terms, [i.lower() for i in med_kb["indications"]]) if med_kb else 0.0
-        score = round(min(1.0, 0.75 + 0.25 * overlap), 2)
-        reasons = ["Explicitly mentioned in the doctor-patient transcript"]
-        if overlap > 0:
-            reasons.append("Indication matches extracted symptoms/diagnosis")
-        scored.append({
+        score = 0.85 if dosage and frequency and duration else 0.65
+        candidate = {
             "medicine": name,
-            "dosage": entity.get("dosage") or (med_kb["common_strengths"][0] if med_kb else None),
-            "frequency": entity.get("frequency") or DEFAULT_FREQUENCY_BY_FORM.get(
-                (med_kb["forms"][0] if med_kb else "tablet"), "twice daily"),
-            "duration": entity.get("duration") or DEFAULT_DURATION,
-            "route": entity.get("route") or (med_kb["default_route"] if med_kb else "oral"),
-            "score": score,
-            "reason": "; ".join(reasons),
-        })
-
-    # 2. Indication-matched candidates from the KB that weren't already mentioned
-    if condition_terms:
-        for med in MEDICINES:
-            if med["generic_name"] in mentioned_meds:
-                continue
-            overlap = _term_overlap_score(condition_terms, [i.lower() for i in med["indications"]])
-            if overlap <= 0:
-                continue
-            score = round(0.35 + 0.55 * overlap, 2)
-            matched = [t for t in condition_terms if any(t in i.lower() or i.lower() in t for i in med["indications"])]
-            scored.append({
-                "medicine": med["generic_name"],
-                "dosage": med["common_strengths"][0] if med["common_strengths"] else None,
-                "frequency": DEFAULT_FREQUENCY_BY_FORM.get(med["forms"][0] if med["forms"] else "tablet", "twice daily"),
-                "duration": DEFAULT_DURATION,
-                "route": med.get("default_route", "oral"),
-                "score": score,
-                "reason": f"Indication match for: {', '.join(matched)}",
-            })
+            "dosage": dosage,
+            "frequency": frequency,
+            "duration": duration,
+            "route": route,
+            "score": round(score, 2),
+            "reason": reason,
+        }
+        if any(value is None for value in (dosage, frequency, duration)):
+            candidate["reason"] = "Medication details are incomplete; do not fabricate a prescription-ready dose/frequency/duration."
+        scored.append(candidate)
 
     scored.sort(key=lambda r: r["score"], reverse=True)
-
-    # Cap to a manageable candidate list for doctor review (top 8)
     return scored[:8]

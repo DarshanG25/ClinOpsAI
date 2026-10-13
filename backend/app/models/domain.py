@@ -148,6 +148,9 @@ class ClinicalEntity(Base):
     frequency = Column(String, nullable=True)
     duration = Column(String, nullable=True)
     route = Column(String, nullable=True)
+    status = Column(String, nullable=True)
+    evidence = Column(Text, nullable=True)
+    context = Column(Text, nullable=True)
     confidence = Column(Float, default=0.6)
     created_at = Column(DateTime, default=datetime.utcnow)
 

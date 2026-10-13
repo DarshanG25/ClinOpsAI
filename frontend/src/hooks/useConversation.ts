@@ -25,11 +25,14 @@ export function useConsultationWorkflow(consultation: Consultation | null) {
 
   useEffect(() => {
     setTranscript(null);
+    setClinicalData(null);
     setClinicalSummary(null);
     setClinicalSummaryStatus(null);
     setClinicalSummaryError(null);
+    setRecommendations([]);
+    setPrescription(null);
     setError(null);
-    if (consultation) setStatus(consultation.status);
+    setStatus(consultation?.status ?? 'CREATED');
     if (!consultation || ['CREATED', 'AUDIO_UPLOADED', 'PROCESSING', 'FAILED'].includes(consultation.status)) {
       return;
     }
@@ -40,6 +43,20 @@ export function useConsultationWorkflow(consultation: Consultation | null) {
         const savedTranscript = await api.getTranscript(consultation.id);
         if (!active) return;
         setTranscript(savedTranscript);
+        try {
+          const [savedClinicalData, savedRecommendations] = await Promise.all([
+            api.getClinicalData(consultation.id),
+            api.getRecommendations(consultation.id),
+          ]);
+          if (!active) return;
+          setClinicalData(savedClinicalData);
+          setRecommendations(savedRecommendations);
+        } catch (err: any) {
+          if (!active) return;
+          if (err?.response?.status !== 404) {
+            setError('Could not load the saved clinical data and review suggestions.');
+          }
+        }
         try {
           const savedSummary = await api.getClinicalSummary(consultation.id);
           if (!active) return;
@@ -140,8 +157,10 @@ export function useConsultationWorkflow(consultation: Consultation | null) {
       const updated = await api.saveDoctorEditedRecommendations(consultationId, items);
       setRecommendations(updated);
       setStatus('DOCTOR_REVIEW');
+      return true;
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Could not save edits.');
+      return false;
     } finally {
       setSaving(false);
     }

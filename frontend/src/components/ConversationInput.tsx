@@ -88,6 +88,7 @@ const ConversationInput = ({ onFileSelected, disabled }: Props) => {
         <input
           id="audio-file-input"
           type="file"
+          accept=".wav,.mp3,.m4a,.mpeg,.mpg,.mp2,.flac,.ogg,audio/*"
           disabled={disabled}
           onChange={handleFilePick}
           className="sr-only"
