@@ -1,8 +1,8 @@
 # Implementation Status
 
 This documents what actually works, verified by running the app, not just
-what files exist. Last verified: full pytest suite (18/18) + fresh
-`npm install && npm run build` both green.
+what files exist. Last verified: isolated backend suite (39 passed) and
+`npm --prefix frontend run build` both green.
 
 ## ✅ Completed (verified working end-to-end)
 
@@ -24,11 +24,15 @@ what files exist. Last verified: full pytest suite (18/18) + fresh
 | Prescription PDF (Unicode/Devanagari font) | ✅ |
 | Database persistence (SQLite via SQLAlchemy) | ✅ |
 | Full consultation state machine | ✅ |
-| pytest suite (18 tests incl. one full end-to-end run) | ✅ all passing |
+| Authentication (patient registration, login, current account) | ✅ |
+| Server-side role and record ownership checks | ✅ |
+| pytest suite (39 tests; isolated database and file storage) | ✅ all passing |
 | Frontend: patient/consultation creation, audio upload/record,
   processing status, transcript view, clinical-data + recommendation
   display, doctor edit UI, approve/reject, prescription preview, PDF
   download | ✅ implemented and TypeScript build passes |
+| Role-protected doctor and patient portals with authenticated API requests | ✅ |
+| Patient-scoped consultations and approved prescription responses | ✅ |
 | Frontend production build (`npm run build`) | ✅ verified clean |
 | Medicine knowledge base (`data/medicines.json`, 21 entries) | ✅ |
 | Synthetic demo consultations (EN/HI/MR/code-mixed, labelled) | ✅ |
@@ -58,14 +62,24 @@ what files exist. Last verified: full pytest suite (18/18) + fresh
 - **`feedback_learning/feedback_updater.py`** remains a stub (as in the
   original scaffold). It is not called anywhere in the pipeline yet.
 
-## ❌ Not implemented (explicitly out of scope for this MVP)
+## ⚠️ Backend/API gaps and deployment limitations
 
-- Authentication / authorization (single implicit "demo doctor" is
-  auto-created and used).
+- Patient-linked structured medical history (conditions, allergies, family
+  history), test results, appointments/follow-ups, and documents do not yet
+  have API contracts. The frontend labels these areas unavailable and does
+  not create placeholder medical facts.
+- Doctor appointment and test-management endpoints are not implemented.
+- Authentication currently has no login rate limiting, MFA, or account
+  recovery. Configure a private signing secret of at least 32 bytes, exact
+  CORS origins, HTTPS, and deployment-level monitoring. This prototype is
+  not production-ready for clinical data.
+- Legacy doctor and patient rows are not automatically linked to accounts by
+  name or email. Linkages require the trusted provisioning or an
+  administrator-reviewed process.
 - Live/streaming ASR (architecture supports adding it later — ASR is
   already an isolated service).
-- Automated frontend tests (manual/build verification only).
-- Multi-doctor / multi-clinic workflows.
+- Automated frontend component/integration tests (manual/build verification only).
+- Multi-clinic workflows.
 
 ## Exact files changed
 
@@ -126,7 +140,7 @@ what files exist. Last verified: full pytest suite (18/18) + fresh
    with internet access to Hugging Face; confirm GPU/CPU auto-detection.
 2. Replace the regex/dictionary clinical NLP with a fine-tuned or
    off-the-shelf clinical NER model for better recall on varied phrasing.
-3. Add doctor authentication and per-doctor consultation ownership.
+3. Add patient-linked medical history, test, appointment, and document API contracts.
 4. Wire `feedback_learning/feedback_updater.py` into the approval flow so
    doctor edits actually influence future recommendation ranking.
 5. Add automated frontend component/integration tests (e.g. Vitest +

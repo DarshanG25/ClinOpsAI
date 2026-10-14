@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { prescriptionPdfUrl } from '../services/api';
+import { downloadPrescriptionPdf } from '../services/api';
 
 interface Props {
   consultationId: string;
@@ -14,9 +14,7 @@ const PdfDownloadButton = ({ consultationId, enabled }: Props) => {
     setError(null);
     setDownloading(true);
     try {
-      const res = await fetch(prescriptionPdfUrl(consultationId));
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
-      const blob = await res.blob();
+      const blob = await downloadPrescriptionPdf(consultationId);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

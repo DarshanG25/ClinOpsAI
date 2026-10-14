@@ -302,6 +302,21 @@ button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
 .auth-switch { margin: 20px 0 0; color: #81909a; font-size: 10px; text-align: center; }
 .auth-switch a { color: #258078; font-weight: 700; }
 .auth-switch a:hover { text-decoration: underline; }
+.login-role-cards { display: grid; gap: 12px; }
+.login-role-card { min-height: 86px; display: flex; align-items: center; gap: 13px; padding: 15px; border: 1px solid #e3ebed; border-radius: 12px; background: #fff; color: #526771; text-decoration: none; transition: border-color .15s, background-color .15s, box-shadow .15s, transform .15s; }
+.login-role-card:hover { transform: translateY(-1px); border-color: #9ac9c3; background: #fbfefd; box-shadow: 0 5px 16px rgba(31,73,73,.06); }
+.login-role-card:focus-visible { outline: 3px solid rgba(22,140,131,.28); outline-offset: 2px; }
+.login-role-card > svg { flex: 0 0 auto; color: #6b8d91; }
+.login-role-icon { width: 42px; height: 42px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 11px; }
+.login-role-icon.doctor { background: #eaf4f4; color: #34857f; }
+.login-role-icon.patient { background: #edf2fa; color: #5478a1; }
+.login-role-copy { flex: 1; display: grid; gap: 5px; }
+.login-role-copy strong { color: #344c58; font-size: 12px; }
+.login-role-copy small { color: #82929a; font-size: 10px; line-height: 1.45; }
+.auth-role-back { display: inline-flex; align-items: center; gap: 6px; margin: -5px 0 18px; color: #63847f; font-size: 10px; font-weight: 600; text-decoration: none; }
+.auth-role-back:hover { color: #287c74; text-decoration: underline; }
+.auth-loading { min-height: 100vh; display: grid; place-content: center; color: #60747f; font-size: 13px; }
+.auth-form button:disabled { cursor: wait; opacity: .68; }
 .auth-aside { position: relative; display: flex; flex-direction: column; justify-content: space-between; padding: 36px 38px; overflow: hidden; border-left: 1px solid #e9efef; background: #f5f9f8; }
 .auth-aside::after { position: absolute; right: -110px; bottom: 16%; width: 360px; height: 360px; border: 1px solid rgba(69,145,136,.1); border-radius: 50%; content: ''; box-shadow: 0 0 0 42px rgba(69,145,136,.025), 0 0 0 84px rgba(69,145,136,.02); pointer-events: none; }
 .auth-aside-top { display: inline-flex; align-items: center; gap: 8px; color: #5a8c85; font-size: 10px; }

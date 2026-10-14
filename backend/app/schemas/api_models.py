@@ -1,7 +1,8 @@
 """Pydantic request/response schemas for the REST API."""
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pathlib import Path
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
 
 # ---------- Patient ----------
@@ -44,6 +45,11 @@ class ConsultationOut(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer("audio_path")
+    def serialize_audio_path(self, value: Optional[str]) -> Optional[str]:
+        # Preserve the response field without disclosing the server's path.
+        return Path(value).name if value else None
 
 
 class AudioUploadResponse(BaseModel):
@@ -191,3 +197,8 @@ class PrescriptionOut(BaseModel):
     pdf_path: Optional[str] = None
     items: List[PrescriptionItemOut]
     created_at: datetime
+
+    @field_serializer("pdf_path")
+    def serialize_pdf_path(self, value: Optional[str]) -> Optional[str]:
+        # Preserve the response field without disclosing the server's path.
+        return Path(value).name if value else None

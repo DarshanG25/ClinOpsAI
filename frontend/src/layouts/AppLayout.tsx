@@ -4,6 +4,7 @@ import {
   Activity, Bell, CalendarDays, ClipboardList, FileHeart, FlaskConical, LayoutDashboard,
   LogOut, Menu, Settings, Stethoscope, Users, X,
 } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
 
 type Portal = 'doctor' | 'patient';
 
@@ -54,10 +55,17 @@ export default function AppLayout({ portal, children }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
+  const { user, signOut } = useAuth();
   const items = portal === 'doctor' ? doctorNavigation : patientNavigation;
+  const initials = user?.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || (portal === 'doctor' ? 'DR' : 'PT');
   const title = pageTitles[location.pathname] ??
     (location.pathname.includes('/patients/') ? 'Patient record' :
       location.pathname.includes('/consultations/') ? 'Consultation details' : 'ClinOps-AI');
+
+  function handleSignOut() {
+    signOut();
+    navigate('/login', { replace: true });
+  }
 
   return (
     <div className="app-shell">
@@ -100,8 +108,8 @@ export default function AppLayout({ portal, children }: Props) {
             <span className="safety-icon"><Activity size={16} /></span>
             <div><strong>Clinical review matters</strong><p>AI suggestions are drafts. A clinician must review before use.</p></div>
           </div>
-          <button className="sign-out-link" type="button" onClick={() => navigate('/login')}>
-            <LogOut size={17} /> Sign in / switch role
+          <button className="sign-out-link" type="button" onClick={handleSignOut}>
+            <LogOut size={17} /> Sign out
           </button>
         </div>
       </aside>
@@ -126,23 +134,18 @@ export default function AppLayout({ portal, children }: Props) {
             <span className="notification-unavailable" aria-label="Notifications are not connected"><Bell size={16} /><small>Notifications unavailable</small></span>
             <details className="profile-menu">
               <summary className="profile-button">
-                <span className="profile-avatar">{portal === 'doctor' ? 'DR' : 'PT'}</span>
-                <span className="profile-label">{portal === 'doctor' ? 'Care team' : 'My account'}<small>{portal === 'doctor' ? 'Doctor workspace' : 'Patient workspace'}</small></span>
+                <span className="profile-avatar">{initials}</span>
+                <span className="profile-label">{user?.name ?? (portal === 'doctor' ? 'Care team' : 'My account')}<small>{user?.email ?? `${portal} workspace`}</small></span>
               </summary>
               <div className="profile-popover">
                 <Link to={portal === 'doctor' ? '/doctor/settings' : '/patient/profile'} onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}>{portal === 'doctor' ? 'Workspace settings' : 'Profile details'}</Link>
-                <Link to="/login" onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}>Sign in / switch role</Link>
+                <button type="button" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); handleSignOut(); }}>Sign out</button>
               </div>
             </details>
           </div>
         </header>
 
         <main className="page-content">
-          <div className="prototype-notice" role="note">
-            <strong>Prototype access</strong>
-            <span>Authentication and role-based authorization are not available in the backend yet. Do not use this app with real patient data.</span>
-            <Link to="/login">Authentication details</Link>
-          </div>
           {children}
         </main>
       </div>

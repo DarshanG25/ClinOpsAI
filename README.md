@@ -38,8 +38,12 @@ backend/app/
   schemas/api_models.py       Pydantic request/response schemas
   repositories/repository.py  Data-access layer (CRUD)
   api/routes/
+    auth.py                   patient registration, login, current account
     patients.py                POST/GET /api/patients
     consultations.py           full consultation workflow endpoints
+  core/
+    security.py                password hashing and HS256 access tokens
+    dependencies.py            active-user and role authorization
   services/
     speech/whisper_service.py         faster-whisper ASR + explicit DEMO mode
     speech/speaker_diarization.py     pyannote speaker turns + cautious role inference
@@ -56,8 +60,9 @@ frontend/src/
   layouts/AppLayout.tsx               responsive doctor/patient portal shell
   pages/DoctorPages.tsx               dashboard, directory, records, visit/prescription lists
   pages/ConsultationDetailPage.tsx    consultation review and existing audio workflow
-  pages/PatientPages.tsx              patient portal (explicitly gated on missing API contracts)
+  pages/PatientPages.tsx              patient-scoped records and explicit missing-data states
   pages/AuthPage.tsx                  role-aware login/register UI
+  auth/                               session restoration and role-protected routes
   pages/HomePage.tsx                  new consultation audio/workflow experience
   components/                         audio input, transcript viewer,
                                        clinical summary, clinical-data + recommendation panel,
@@ -144,29 +149,51 @@ uvicorn app.main:app --reload --port 8000
 ```bash
 cd frontend
 npm install
-cp .env.example .env   # VITE_API_BASE_URL=http://localhost:8000/api
+cp .env.example .env   # optional: CLINOPS_API_PROXY_TARGET=http://127.0.0.1:8000
 npm run dev             # dev server, http://localhost:5173
 npm run build            # production build -> frontend/dist
+npm test                 # frontend role/login flow tests
 ```
 
-The frontend has doctor routes under `/doctor/*`, patient routes under
-`/patient/*`, plus `/login` and `/register`. The backend currently has no
-authentication or authorization, so the role selector is informational only;
-the frontend does not send or store credentials and displays a prototype
-warning on portal pages. Do not expose this prototype to real patient data.
+In development the browser calls the same-origin `/api` path. Vite proxies
+`/api/*` to `http://127.0.0.1:8000`; set
+`CLINOPS_API_PROXY_TARGET` only when the backend is listening elsewhere.
+Vite reads environment files at startup, so restart it after changing this
+target. In GitHub Codespaces, start the backend on port 8000 and the frontend
+on port 5173, then open/forward port 5173 in the browser. The backend can stay
+workspace-local because Vite, not the browser, connects to port 8000. Keep
+the frontend API base path at `/api`; do not set it to a browser-side
+`localhost:8000` URL. Production hosting must route same-origin `/api/*`
+requests to FastAPI.
 
-The doctor workspace reads the existing patient and consultation endpoints and
-uses the existing transcript, clinical-data, recommendation, prescription, and
-PDF endpoints. The frontend does not fabricate appointment, test, document,
-allergy, or family-history records. Those features require backend contracts
-before they can be populated. The patient portal deliberately does not fetch
-the global doctor endpoints: a secure patient login and patient-scoped APIs
-are needed first. In particular, patient-scoped consultation/history,
-approved-prescription, test-result, appointment/follow-up, and profile
-endpoints are missing. Authentication endpoints (`POST /api/auth/login`,
-`POST /api/auth/register` or an equivalent identity/session contract) and
-server-side role authorization are also missing. Login and registration
-therefore explain the limitation and never pretend an account was created.
+The frontend has doctor routes under `/doctor/*`, patient routes under
+`/patient/*`, plus `/login`, `/doctor/login`, `/patient/login`, and
+`/patient/register`. Patient registration is public;
+doctor accounts must be created through the trusted local provisioning script.
+Portal routes call `/api/auth/me` to verify a session and redirect accounts to
+their server-assigned role. Access tokens are held in browser `sessionStorage`
+and attached to API requests; this is not a substitute for HTTPS, a strong
+private signing key, or production security controls.
+
+The doctor workspace reads the existing patient and consultation endpoints
+and uses the transcript, clinical-data, recommendation, prescription, and
+PDF endpoints. The patient portal uses the authenticated user's linked patient
+record, patient-visible consultation list, and approved prescription
+responses. It never reads global doctor endpoints or displays drafts. Patient
+consultations currently expose only approved/prescription-generated records.
+
+The backend does not yet provide patient-linked structured medical history
+(conditions, allergies, family history), test/result records, appointments or
+follow-ups, or documents. Doctor appointment/test workflows are also not
+available. The corresponding UI sections explicitly state these contract gaps
+instead of displaying sample records. The current patient profile is limited
+to fields in the `Patient` record.
+
+Set `JWT_SECRET_KEY` to a private value of at least 32 bytes and configure
+`CORS_ALLOWED_ORIGINS` with the exact browser origins before running the
+backend. Public registration accepts only patient roles; provision a doctor
+from `backend/` with `python scripts/create_demo_doctor.py`. Do not use the
+development defaults or demo credentials for real clinical use.
 
 ### Docker (optional)
 
@@ -189,6 +216,10 @@ See [`data/README.md`](data/README.md) for full details. In short:
   through their official, access-controlled channels.
 
 ## Demo workflow
+
+Run these API steps with a bearer token from a trusted doctor account; public
+registration creates patient accounts only. The command for trusted local
+doctor provisioning is `python scripts/create_demo_doctor.py` from `backend/`.
 
 1. `POST /api/patients` → create a patient.
 2. `POST /api/consultations` → create a consultation for that patient.
@@ -214,10 +245,22 @@ The same flow is available end-to-end from the React UI (`New Consultation`
 
 ## APIs
 
+All routes below except `/health`, `/api/auth/register`, and
+`/api/auth/login` require `Authorization: Bearer <access_token>`.
+Registration creates patient accounts only. Doctor accounts are created by
+the trusted provisioning script. Doctor consultation writes require the
+authenticated account's linked doctor record, and patients can read only
+their own linked record and approved clinical content.
+
 | Method | Path | Purpose |
 |---|---|---|
+| POST | `/api/auth/register` | Register a patient account and new linked patient record |
+| POST | `/api/auth/login` | Authenticate and return a short-lived access token |
+| GET | `/api/auth/me` | Get the authenticated account |
 | POST | `/api/patients` | Create patient |
+| GET | `/api/patients` | List the current patient's own record or the doctor's assigned patients |
 | GET | `/api/patients/{id}` | Get patient |
+| GET | `/api/consultations` | List consultations assigned to the doctor or approved for the patient |
 | POST | `/api/consultations` | Create consultation |
 | GET | `/api/consultations/{id}` | Get consultation (+ status) |
 | POST | `/api/consultations/{id}/audio` | Upload audio |
@@ -284,7 +327,10 @@ APPROVED/REJECTED`.
 - **Recommendation scoring** is a transparent indication-overlap heuristic
   ("Recommendation Relevance Score"), not a trained or validated clinical
   model, and is explicitly not represented as one.
-- No authentication/authorization layer (out of scope for this MVP).
+- **Authentication deployment**: access tokens use HS256 and expire after a
+  configurable, bounded interval. The service does not currently provide
+  login rate limiting, MFA, or account recovery; use deployment-level
+  protections and do not expose it as a production clinical system.
 - `feedback_learning/feedback_updater.py` is a stub for future adaptive
   learning from approved cases; not wired into the pipeline yet.
 
@@ -293,7 +339,9 @@ APPROVED/REJECTED`.
 - Real-time/streaming ASR (architecture already separates ASR as its own
   service, so this is additive).
 - Replace the rule-based NLP with a fine-tuned clinical NER model.
-- Authentication (doctor login) and multi-doctor/multi-clinic support.
+- Multi-clinic support and administrative account lifecycle/recovery tools.
+- Patient-linked structured medical history, allergies, test results,
+  appointments/follow-ups, and document APIs.
 - Expand the medicine KB and validate it against a maintained formulary.
 - Wire up `feedback_learning` to actually improve recommendation ranking
   over time from doctor edits/approvals.

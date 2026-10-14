@@ -123,11 +123,11 @@ def normalize_audio_to_wav(audio_path: str, output_path: str) -> str:
         )
 
     logger.info(
-        "Audio preprocessing completed: output=%s format=wav codec=pcm_s16le "
+        "Audio preprocessing completed: format=wav codec=pcm_s16le "
         "sample_rate=%s channels=%s duration=%.3fs elapsed=%.2fs "
         "noise_filter=afftdn+highpass+lowpass loudness=normalized "
         "silence=preserved vad=not_applied_during_preprocessing",
-        target, sample_rate, channels, frames / sample_rate, time.monotonic() - started_at,
+        sample_rate, channels, frames / sample_rate, time.monotonic() - started_at,
     )
     return str(target)
 

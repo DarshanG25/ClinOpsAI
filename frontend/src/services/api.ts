@@ -1,12 +1,19 @@
 import axios from 'axios';
+import { getAccessToken } from './authToken';
 import type {
   Patient, Consultation, Transcript, ClinicalData, Recommendation,
   Prescription, ProcessResponse, ClinicalSummary,
 } from '../types';
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
-    timeout: 10 * 60 * 1000, // First ASR run downloads the model and CPU transcription is slow
+  baseURL: '/api',
+  timeout: 10 * 60 * 1000, // First ASR run downloads the model and CPU transcription is slow
+});
+
+api.interceptors.request.use((config) => {
+  const token = getAccessToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
 });
 
 export default api;
@@ -127,7 +134,10 @@ export async function getPrescription(consultationId: string): Promise<Prescript
   return data;
 }
 
-export function prescriptionPdfUrl(consultationId: string): string {
-  const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
-  return `${base}/consultations/${consultationId}/prescription/pdf`;
+export async function downloadPrescriptionPdf(consultationId: string): Promise<Blob> {
+  const { data } = await api.get<Blob>(
+    `/consultations/${consultationId}/prescription/pdf`,
+    { responseType: 'blob' },
+  );
+  return data;
 }

@@ -2,10 +2,12 @@ import logging
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.routes import patients, consultations
+from app.api.routes import patients, consultations, auth
 from app.config.settings import settings
 from app.db.database import init_db
 from app.services.speech.whisper_service import whisper_status
@@ -26,9 +28,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.exception_handler(SQLAlchemyError)
+async def handle_database_error(
+    _request: Request,
+    exc: SQLAlchemyError,
+) -> JSONResponse:
+    logging.getLogger("clinops.database").error(
+        "Database operation failed (%s)",
+        type(exc).__name__,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "A database operation failed."},
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,16 +55,17 @@ app.add_middleware(
 
 app.include_router(patients.router, prefix="/api", tags=["patients"])
 app.include_router(consultations.router, prefix="/api", tags=["consultations"])
-
+app.include_router(auth.router, prefix="/api", tags=["authentication"])
 
 @app.get("/health")
 def health_check():
     return {
         "status": "ok",
         "service": settings.app_name,
-        "environment": settings.environment,
-        "database_url": settings.database_url,
-        "asr": whisper_status(),
+        "asr": {
+            "configured_mode": settings.asr_mode,
+            "model_loaded": whisper_status()["model_loaded"],
+        },
         "disclaimer": (
             "ClinOps-AI is an academic prototype and clinical decision-support "
             "demonstration. AI-generated recommendations are not medical advice "

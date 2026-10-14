@@ -208,3 +208,36 @@ class PrescriptionItem(Base):
     instructions = Column(String, nullable=True)
 
     prescription = relationship("Prescription", back_populates="items")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False, unique=True, index=True)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False)  # doctor | patient
+
+    # Link the login account to its actual clinical record
+    doctor_id = Column(
+        String,
+        ForeignKey("doctors.id"),
+        nullable=True,
+        unique=True,
+    )
+    patient_id = Column(
+        String,
+        ForeignKey("patients.id"),
+        nullable=True,
+        unique=True,
+    )
+
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )

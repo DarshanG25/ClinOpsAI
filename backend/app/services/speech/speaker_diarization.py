@@ -56,7 +56,9 @@ def _load_pipeline():
             _pipeline.to(torch.device("cuda"))
         return _pipeline
     except Exception as exc:  # noqa: BLE001
-        _pipeline_load_failed_reason = f"Could not load pyannote diarization model: {exc}"
+        _pipeline_load_failed_reason = (
+            f"Could not load pyannote diarization model ({type(exc).__name__})."
+        )
         logger.warning(_pipeline_load_failed_reason)
         return None
 
@@ -191,20 +193,20 @@ def diarize_transcription(
         )
     try:
         if audio_is_preprocessed:
-            logger.info("Diarization started: normalized=%s", audio_path)
+            logger.info("Diarization started for preprocessed audio.")
             try:
                 annotation = pipeline(str(Path(audio_path)))
             finally:
-                logger.info("Diarization ended: normalized=%s", audio_path)
+                logger.info("Diarization ended for preprocessed audio.")
         else:
             with tempfile.TemporaryDirectory(prefix="clinops-diarization-") as temp_dir:
                 normalized_path = str(Path(temp_dir) / "diarization.wav")
                 _normalize_audio_for_diarization(audio_path, normalized_path)
-                logger.info("Diarization started: source=%s normalized=%s", audio_path, normalized_path)
+                logger.info("Diarization started for normalized audio.")
                 try:
                     annotation = pipeline(normalized_path)
                 finally:
-                    logger.info("Diarization ended: source=%s normalized=%s", audio_path, normalized_path)
+                    logger.info("Diarization ended for normalized audio.")
         tracks = _tracks_from_annotation(annotation)
         if not tracks:
             return _mark_unavailable(fallback_segments, "no_speech_tracks")
@@ -216,8 +218,11 @@ def diarize_transcription(
             segment["speaker_role"] = roles.get(segment["speaker_id"], _ROLE_UNKNOWN)
         return segments, "complete"
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Speaker diarization failed for %s", audio_path)
-        return _mark_unavailable(fallback_segments, f"error: {exc}")
+        logger.error("Speaker diarization failed (%s).", type(exc).__name__)
+        return _mark_unavailable(
+            fallback_segments,
+            f"error: {type(exc).__name__}",
+        )
 
 
 def _mark_unavailable(

@@ -4,6 +4,8 @@ All values can be overridden with environment variables or a `.env` file
 (see `.env.example` at the repository root). Nothing here is a secret.
 """
 from pathlib import Path
+from typing import Literal
+from pydantic import ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +17,18 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = f"sqlite:///{(BACKEND_ROOT / 'clinops_ai.db').as_posix()}"
+
+    # Authentication
+    jwt_secret_key: str | None = None
+    jwt_algorithm: Literal["HS256"] = "HS256"
+    access_token_expire_minutes: int = Field(default=30, ge=5, le=1440)
+
+    # The frontend authenticates with bearer tokens; keep credentialed CORS
+    # restricted to explicitly configured browser origins.
+    cors_allowed_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
     # ASR
     asr_mode: str = "auto"  # auto | whisper | demo
@@ -45,11 +59,20 @@ class Settings(BaseSettings):
     embedding_model: str | None = None
     pdf_output_dir_legacy: str | None = None
 
-    class Config:
-        env_file = (BACKEND_ROOT.parent / ".env", BACKEND_ROOT / ".env")
-        case_sensitive = False
-        extra = "ignore"
-        protected_namespaces = ("settings_",)
+    model_config = ConfigDict(
+        env_file=(BACKEND_ROOT.parent / ".env", BACKEND_ROOT / ".env"),
+        case_sensitive=False,
+        extra="ignore",
+        protected_namespaces=("settings_",),
+    )
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def validate_cors_origins(cls, origins: list[str]) -> list[str]:
+        normalized = [origin.strip().rstrip("/") for origin in origins]
+        if not normalized or any(not origin or origin == "*" for origin in normalized):
+            raise ValueError("CORS origins must be explicit, non-wildcard origins.")
+        return list(dict.fromkeys(normalized))
 
 
 settings = Settings()

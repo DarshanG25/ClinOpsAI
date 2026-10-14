@@ -10,15 +10,26 @@ import os
 import sys
 import math
 import struct
+import tempfile
 import wave
+import uuid
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 
-# --- Force a throwaway test DB + demo ASR mode before importing the app ---
-TEST_DB_PATH = Path(__file__).resolve().parent / "test_clinops.db"
+# --- Force an isolated temporary DB + demo ASR mode before importing the app ---
+TEST_DB_DIRECTORY = tempfile.TemporaryDirectory(prefix="clinops-api-tests-")
+TEST_DB_PATH = Path(TEST_DB_DIRECTORY.name) / "clinops_test.db"
+TEST_STORAGE_DIRECTORY = tempfile.TemporaryDirectory(prefix="clinops-api-storage-")
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.as_posix()}"
+os.environ["UPLOAD_DIR"] = str(Path(TEST_STORAGE_DIRECTORY.name) / "audio")
+os.environ["PDF_OUTPUT_DIR"] = str(Path(TEST_STORAGE_DIRECTORY.name) / "pdfs")
+os.environ["MODEL_CACHE_DIR"] = str(Path(TEST_STORAGE_DIRECTORY.name) / "models")
 os.environ["ASR_MODE"] = "demo"
 os.environ["DEFAULT_LANGUAGE"] = "en"
+os.environ["JWT_SECRET_KEY"] = "test-only-secret-key-not-for-any-real-environment"
+os.environ["JWT_ALGORITHM"] = "HS256"
+os.environ["CORS_ALLOWED_ORIGINS"] = '["http://localhost:5173"]'
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2] / "backend"
 sys.path.insert(0, str(BACKEND_ROOT))
@@ -26,21 +37,40 @@ sys.path.insert(0, str(BACKEND_ROOT))
 import pytest
 from fastapi.testclient import TestClient
 
-if TEST_DB_PATH.exists():
-    TEST_DB_PATH.unlink()
-
 from app.main import app  # noqa: E402
+from app.core.security import create_access_token  # noqa: E402
+from app.db.database import SessionLocal, engine  # noqa: E402
+from app.models.domain import Consultation, Doctor, Prescription, User  # noqa: E402
+from app.core.security import hash_password  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as c:
+        db = SessionLocal()
+        try:
+            doctor = Doctor(name="Test Clinician")
+            db.add(doctor)
+            db.flush()
+            user = User(
+                name="Test Clinician",
+                email="doctor@example.test",
+                password_hash=hash_password("test-password"),
+                role="doctor",
+                doctor_id=doctor.id,
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            token = create_access_token(user.id, user.role)
+        finally:
+            db.close()
+        c.headers["Authorization"] = "Bearer " + token
+        c.headers["Authorization"] = f"Bearer {token}"
         yield c
-    try:
-        if TEST_DB_PATH.exists():
-            TEST_DB_PATH.unlink(missing_ok=True)
-    except PermissionError:
-        pass
+    engine.dispose()
+    TEST_DB_DIRECTORY.cleanup()
+    TEST_STORAGE_DIRECTORY.cleanup()
 
 
 @pytest.fixture(scope="module")
@@ -76,6 +106,38 @@ def _valid_test_wav() -> bytes:
     return buffer.getvalue()
 
 
+def _register_patient(client, name: str = "Secure Patient") -> User:
+    email = f"{uuid.uuid4().hex}@example.test"
+    response = client.post("/api/auth/register", json={
+        "name": name,
+        "email": email,
+        "password": "patient-test-password",
+        "role": "patient",
+    })
+    assert response.status_code == 201
+    db = SessionLocal()
+    try:
+        return db.query(User).filter(User.email == email).one()
+    finally:
+        db.expunge_all()
+        db.close()
+
+
+@contextmanager
+def _as_user(client, user: User):
+    previous = client.headers.get("Authorization")
+    client.headers["Authorization"] = (
+        "Bearer " + create_access_token(user.id, user.role)
+    )
+    try:
+        yield
+    finally:
+        if previous is None:
+            client.headers.pop("Authorization", None)
+        else:
+            client.headers["Authorization"] = previous
+
+
 # ---------- 1. Health ----------
 def test_health(client):
     r = client.get("/health")
@@ -84,6 +146,37 @@ def test_health(client):
     assert body["status"] == "ok"
     assert "disclaimer" in body
     assert "asr" in body
+    assert "database_url" not in body
+    assert "load_failure_reason" not in body["asr"]
+
+
+def test_cors_allows_only_configured_origins(client):
+    allowed = client.options(
+        "/api/auth/me",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert allowed.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert allowed.headers["access-control-allow-credentials"] == "true"
+
+    blocked = client.options(
+        "/api/auth/me",
+        headers={
+            "Origin": "https://untrusted.example",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert "access-control-allow-origin" not in blocked.headers
+
+
+def test_wildcard_credentialed_cors_configuration_is_rejected():
+    from pydantic import ValidationError
+    from app.config.settings import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, cors_allowed_origins=["*"])
 
 
 # ---------- 2. Patient creation ----------
@@ -93,6 +186,11 @@ def test_create_patient(client):
     body = r.json()
     assert body["name"] == "Test Patient"
     assert "id" in body
+
+    consultation = client.post(
+        "/api/consultations", json={"patient_id": body["id"]},
+    )
+    assert consultation.status_code == 201
 
     r2 = client.get(f"/api/patients/{body['id']}")
     assert r2.status_code == 200
@@ -160,18 +258,17 @@ def test_preprocessing_failure_marks_consultation_failed(client, patient, monkey
     processed = client.post(f"/api/consultations/{consultation_id}/process")
 
     assert processed.status_code == 500
-    assert "Install FFmpeg" in processed.json()["detail"]
+    assert processed.json()["detail"] == "Audio preprocessing or processing failed."
     consultation = client.get(f"/api/consultations/{consultation_id}").json()
     assert consultation["status"] == "FAILED"
 
 
-def test_process_without_audio_fails():
+def test_process_without_audio_fails(client):
     """A consultation with no uploaded audio should fail /process cleanly."""
-    with TestClient(app) as c:
-        p = c.post("/api/patients", json={"name": "No Audio Patient"}).json()
-        cons = c.post("/api/consultations", json={"patient_id": p["id"]}).json()
-        r = c.post(f"/api/consultations/{cons['id']}/process")
-        assert r.status_code == 400
+    patient = client.post("/api/patients", json={"name": "No Audio Patient"}).json()
+    cons = client.post("/api/consultations", json={"patient_id": patient["id"]}).json()
+    response = client.post(f"/api/consultations/{cons['id']}/process")
+    assert response.status_code == 400
 
 
 # ---------- 7. Clinical extraction (+ dosage/frequency/duration) ----------
@@ -382,11 +479,12 @@ def test_doctor_approval_generates_prescription(client, consultation):
     doctor_id = consultation["doctor_id"]
 
     r = client.post(f"/api/consultations/{cid}/approve", json={
-        "doctor_id": doctor_id, "approved": True,
+        "doctor_id": doctor_id, "approved": True, "approved_by": "spoofed-id",
     })
     assert r.status_code == 200
     presc = r.json()
     assert presc["status"] == "APPROVED"
+    assert presc["approved_by"] == doctor_id
     assert len(presc["items"]) >= 1
 
     consult = client.get(f"/api/consultations/{cid}").json()
@@ -451,6 +549,16 @@ def test_end_to_end_synthetic_consultation():
     """Runs the entire pipeline once, top to bottom, on its own patient/
     consultation, independent of the module-scoped fixtures above."""
     with TestClient(app) as c:
+        db = SessionLocal()
+        try:
+            doctor_user = db.query(User).filter(
+                User.email == "doctor@example.test",
+            ).one()
+            token = create_access_token(doctor_user.id, doctor_user.role)
+        finally:
+            db.close()
+        c.headers["Authorization"] = "Bearer " + token
+
         patient = c.post("/api/patients", json={
             "name": "Synthetic Demo Patient", "age": 30, "gender": "female", "language": "en",
         }).json()
@@ -577,3 +685,286 @@ def test_summary_failure_preserves_transcript_and_continues_processing(client, p
     assert client.get(f"/api/consultations/{cid}/transcript").json()["text"] == processed.json()["transcript"]
     assert client.get(f"/api/consultations/{cid}/clinical-summary").status_code == 404
     assert client.get(f"/api/consultations/{cid}/clinical-data").status_code == 200
+
+
+def test_missing_invalid_expired_and_missing_claim_tokens_are_rejected(client):
+    import jwt
+
+    authorization = client.headers.pop("Authorization", None)
+    try:
+        assert client.get("/api/auth/me").status_code == 401
+        client.headers["Authorization"] = "Bearer not-a-valid-token"
+        assert client.get("/api/auth/me").status_code == 401
+
+        secret = os.environ["JWT_SECRET_KEY"]
+        missing_exp = jwt.encode(
+            {"sub": "unknown", "role": "doctor"},
+            secret,
+            algorithm="HS256",
+        )
+        client.headers["Authorization"] = "Bearer " + missing_exp
+        assert client.get("/api/auth/me").status_code == 401
+
+        expired = jwt.encode(
+            {"sub": "unknown", "role": "doctor", "exp": 1},
+            secret,
+            algorithm="HS256",
+        )
+        client.headers["Authorization"] = "Bearer " + expired
+        assert client.get("/api/auth/me").status_code == 401
+    finally:
+        if authorization:
+            client.headers["Authorization"] = authorization
+
+
+def test_authentication_and_registration_policy(client):
+    denied_doctor = client.post("/api/auth/register", json={
+        "name": "Unprovisioned Doctor",
+        "email": f"{uuid.uuid4().hex}@example.test",
+        "password": "patient-test-password",
+        "role": "doctor",
+    })
+    assert denied_doctor.status_code == 403
+
+    invalid_login = client.post("/api/auth/login", json={
+        "email": "doctor@example.test",
+        "password": "incorrect-password",
+    })
+    assert invalid_login.status_code == 401
+
+    login = client.post("/api/auth/login", json={
+        "email": "doctor@example.test",
+        "password": "test-password",
+    })
+    assert login.status_code == 200
+    assert login.json()["token_type"] == "bearer"
+    assert "password_hash" not in login.json()["user"]
+
+    whoami = client.get("/api/auth/me")
+    assert whoami.status_code == 200
+    assert whoami.json()["role"] == "doctor"
+
+
+def test_inactive_and_role_mismatched_accounts_are_rejected(client):
+    user = _register_patient(client)
+    db = SessionLocal()
+    try:
+        stored_user = db.query(User).filter(User.id == user.id).one()
+        stored_user.is_active = False
+        db.commit()
+    finally:
+        db.close()
+    with _as_user(client, user):
+        assert client.get("/api/auth/me").status_code == 401
+
+    user.is_active = True
+    role_mismatch_token = create_access_token(user.id, "doctor")
+    previous = client.headers.get("Authorization")
+    client.headers["Authorization"] = "Bearer " + role_mismatch_token
+    try:
+        assert client.get("/api/auth/me").status_code == 401
+    finally:
+        client.headers["Authorization"] = previous
+
+
+def test_patient_registration_does_not_link_existing_records(client, patient):
+    existing_patient_id = patient["id"]
+    email = f"{uuid.uuid4().hex}@example.test"
+    response = client.post("/api/auth/register", json={
+        "name": patient["name"],
+        "email": email,
+        "password": "patient-test-password",
+        "role": "patient",
+        "patient_id": existing_patient_id,
+        "doctor_id": "attacker-controlled-doctor",
+        "is_active": False,
+    })
+    assert response.status_code == 201
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).one()
+        assert user.patient_id != existing_patient_id
+        assert user.is_active is True
+        assert user.doctor_id is None
+    finally:
+        db.close()
+
+
+def test_patient_cannot_read_another_patient_record(client, patient):
+    patient_user = _register_patient(client)
+    with _as_user(client, patient_user):
+        own_records = client.get("/api/patients")
+        other_record = client.get(f"/api/patients/{patient['id']}")
+    assert own_records.status_code == 200
+    assert len(own_records.json()) == 1
+    assert own_records.json()[0]["id"] == patient_user.patient_id
+    assert other_record.status_code == 403
+
+
+def test_doctor_cannot_access_another_doctors_consultation(client, patient):
+    db = SessionLocal()
+    try:
+        other_doctor = Doctor(name="Other Clinician")
+        db.add(other_doctor)
+        db.flush()
+        other_user = User(
+            name="Other Clinician",
+            email=f"{uuid.uuid4().hex}@example.test",
+            password_hash=hash_password("other-test-password"),
+            role="doctor",
+            doctor_id=other_doctor.id,
+            is_active=True,
+        )
+        db.add(other_user)
+        db.flush()
+        consultation = Consultation(
+            patient_id=patient["id"],
+            doctor_id=other_doctor.id,
+            status="CREATED",
+        )
+        db.add(consultation)
+        db.commit()
+        db.refresh(other_user)
+        consultation_id = consultation.id
+        db.expunge(other_user)
+    finally:
+        db.close()
+
+    with _as_user(client, other_user):
+        assert client.get(f"/api/consultations/{consultation_id}").status_code == 200
+    assert client.get(f"/api/consultations/{consultation_id}").status_code == 403
+    assert client.post(f"/api/consultations/{consultation_id}/process").status_code == 403
+
+
+def test_patient_cannot_perform_doctor_only_write_operations(client):
+    patient_user = _register_patient(client)
+    created = client.post("/api/consultations", json={
+        "patient_id": patient_user.patient_id,
+    })
+    assert created.status_code == 201
+    consultation_id = created.json()["id"]
+    doctor_id = created.json()["doctor_id"]
+
+    with _as_user(client, patient_user):
+        assert client.post("/api/patients", json={"name": "Spoofed"}).status_code == 403
+        assert client.post("/api/consultations", json={
+            "patient_id": patient_user.patient_id,
+        }).status_code == 403
+        assert client.post(
+            f"/api/consultations/{consultation_id}/audio",
+            files={"file": ("write.wav", _valid_test_wav(), "audio/wav")},
+        ).status_code == 403
+        assert client.post(f"/api/consultations/{consultation_id}/process").status_code == 403
+        assert client.post(
+            f"/api/consultations/{consultation_id}/recommendations",
+        ).status_code == 403
+        assert client.put(
+            f"/api/consultations/{consultation_id}/recommendations",
+            json={"items": []},
+        ).status_code == 403
+        assert client.post(
+            f"/api/consultations/{consultation_id}/approve",
+            json={"doctor_id": doctor_id, "approved": True},
+        ).status_code == 403
+        assert client.get(
+            f"/api/consultations/{consultation_id}/prescription/pdf",
+        ).status_code == 403
+
+
+def test_client_cannot_assign_consultation_to_another_doctor(client, patient):
+    db = SessionLocal()
+    try:
+        other_doctor = Doctor(name="Unlinked Clinician")
+        db.add(other_doctor)
+        db.commit()
+        other_doctor_id = other_doctor.id
+    finally:
+        db.close()
+
+    response = client.post("/api/consultations", json={
+        "patient_id": patient["id"],
+        "doctor_id": other_doctor_id,
+    })
+    assert response.status_code == 403
+
+
+def test_patients_only_receive_approved_prescriptions(client):
+    patient_user = _register_patient(client)
+    consultation_response = client.post("/api/consultations", json={
+        "patient_id": patient_user.patient_id,
+    })
+    assert consultation_response.status_code == 201
+    consultation_id = consultation_response.json()["id"]
+    doctor_id = consultation_response.json()["doctor_id"]
+
+    db = SessionLocal()
+    try:
+        consultation = db.query(Consultation).filter(
+            Consultation.id == consultation_id,
+        ).one()
+        consultation.status = "PRESCRIPTION_GENERATED"
+        db.commit()
+        from app.repositories import repository as repo
+        prescription = repo.create_or_update_prescription(
+            db,
+            consultation_id=consultation_id,
+            patient_id=patient_user.patient_id,
+            doctor_id=doctor_id,
+            diagnosis_summary="Test-only summary",
+            precautions=[],
+            status="DRAFT",
+            items=[{"medicine": "Test-only medicine"}],
+        )
+        prescription.pdf_path = "/private/test-only.pdf"
+        db.commit()
+    finally:
+        db.close()
+
+    with _as_user(client, patient_user):
+        draft = client.get(f"/api/consultations/{consultation_id}/prescription")
+    assert draft.status_code == 403
+
+    db = SessionLocal()
+    try:
+        prescription = db.query(Prescription).filter(
+            Prescription.consultation_id == consultation_id,
+        ).one()
+        prescription.status = "REJECTED"
+        db.commit()
+    finally:
+        db.close()
+    with _as_user(client, patient_user):
+        rejected = client.get(f"/api/consultations/{consultation_id}/prescription")
+    assert rejected.status_code == 403
+
+    db = SessionLocal()
+    try:
+        prescription = db.query(Prescription).filter(
+            Prescription.consultation_id == consultation_id,
+        ).one()
+        prescription.status = "APPROVED"
+        prescription.approved_by = doctor_id
+        db.commit()
+    finally:
+        db.close()
+
+    with _as_user(client, patient_user):
+        approved = client.get(f"/api/consultations/{consultation_id}/prescription")
+        consultation_list = client.get("/api/consultations")
+        consultation_detail = client.get(f"/api/consultations/{consultation_id}")
+        transcript = client.get(f"/api/consultations/{consultation_id}/transcript")
+        clinical_data = client.get(f"/api/consultations/{consultation_id}/clinical-data")
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "APPROVED"
+    assert approved.json()["doctor_id"] is None
+    assert approved.json()["approved_by"] is None
+    assert approved.json()["pdf_path"] is None
+    assert consultation_list.status_code == 200
+    assert all(row["doctor_id"] is None and row["notes"] is None for row in consultation_list.json())
+    assert consultation_detail.status_code == 200
+    assert consultation_detail.json()["doctor_id"] is None
+    assert consultation_detail.json()["notes"] is None
+    assert consultation_detail.json()["audio_path"] is None
+    assert transcript.status_code == 403
+    assert clinical_data.status_code == 403

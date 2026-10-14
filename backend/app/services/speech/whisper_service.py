@@ -69,7 +69,7 @@ def _load_whisper_model():
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
-        _model_load_failed_reason = f"faster-whisper not installed ({exc})"
+        _model_load_failed_reason = "faster-whisper is not installed."
         logger.warning(_model_load_failed_reason)
         return None
 
@@ -86,9 +86,7 @@ def _load_whisper_model():
         return _model
     except Exception as exc:  # noqa: BLE001 - report unavailable real ASR
         _model_load_failed_reason = (
-            f"Could not load Whisper model '{settings.whisper_model}' ({exc.__class__.__name__}: {exc}). "
-            "This usually means the model weights aren't cached and can't be downloaded "
-            "in this environment. Real ASR will report an error instead of fabricating a transcript."
+            f"Could not load the configured Whisper model ({type(exc).__name__})."
         )
         logger.warning(_model_load_failed_reason)
         return None
@@ -122,7 +120,10 @@ def transcribe_audio(
         try:
             source_path = preprocess_audio_for_asr(audio_path)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Preprocessing failed for %s (%s); continuing with original file.", audio_path, exc)
+            logger.warning(
+                "Audio preprocessing failed (%s); continuing with original file.",
+                type(exc).__name__,
+            )
 
     if mode in ("auto", "whisper"):
         model = _load_whisper_model()
@@ -164,14 +165,15 @@ def transcribe_audio(
                         "word_segments": word_segments,
                         "asr_mode": "whisper",
                     }
-                logger.warning("Whisper produced an empty transcript for %s.", audio_path)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Whisper inference failed (%s).", exc)
+                logger.warning("Whisper produced an empty transcript.")
+            except Exception:
+                    logger.exception("Whisper inference failed")
+                    raise
         if model is None:
             raise RuntimeError(
                 "Real speech recognition is unavailable. Install/configure faster-whisper "
                 "and ensure the model weights are available, or set ASR_MODE=demo only for "
-                f"synthetic test data. {_model_load_failed_reason}"
+                "synthetic test data."
             )
 
     elif mode != "demo":
